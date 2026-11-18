@@ -69,7 +69,7 @@ The cookie is strictly necessary for the security of the site and contains no pe
 
 ## License
 
-GPL-2.0-or-later. Fork it, ship it, PoWn some bots.
+GPL-2.0-or-later. Fork it, run it, PoWn some bots.
 
 ---
 
