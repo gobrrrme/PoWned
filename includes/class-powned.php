@@ -479,6 +479,9 @@ final class Powned {
 			header( 'Content-Type: text/html; charset=utf-8' );
 			header( 'Cache-Control: no-store, max-age=0' );
 			header( 'X-Robots-Tag: noindex, nofollow' );
+			// The page is built for this already: no inline script or style,
+			// everything same-origin except an optional https logo.
+			header( "Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; worker-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" );
 		}
 		include dirname( POWNED_FILE ) . '/templates/challenge.php';
 		exit;
