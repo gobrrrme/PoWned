@@ -37,7 +37,23 @@ Search engines should not crawl filter URLs anyway (block them in robots.txt). P
 
 = Does it set cookies? =
 
-One strictly necessary cookie, `powned`, with the solved block. It never contains the IP address.
+One strictly necessary cookie, `powned`, with the solved block. It never contains the IP address. Sent with SameSite=Lax, Secure on HTTPS, host-only, valid 24 hours by default.
+
+= Does it work behind Cloudflare or a reverse proxy? =
+
+The gate reads PHP's REMOTE_ADDR. Behind a proxy every visitor shares that address, so the network binding collapses into one key and a single solved block unlocks the site for everyone. Configure the proxy to pass the client IP and make PHP trust it, or set "Bound to: Not bound". Page-cache plugins and CDNs also serve cached pages before the plugin runs - never cache the protected URLs.
+
+= Does it protect the REST API / WooCommerce Store API? =
+
+No. /wp-json/* is excluded by default, so product data stays reachable there without proof of work. The gate protects the HTML shop pages.
+
+= How strong is the proof of work, really? =
+
+18 bits are ~260,000 hashes: about a second in a browser, but milliseconds for a bot running native code. The gate exists to make bulk crawling of filter URLs annoying (every request pays, every network waits), not to stop a targeted attacker with a GPU. Raise base difficulty if your visitors can afford it; blocks stay valid once solved until they expire.
+
+== Frequently Asked Questions ==
+
+(see above)
 
 == Changelog ==
 
