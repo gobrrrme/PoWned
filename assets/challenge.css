@@ -1,0 +1,38 @@
+/* PoWned: challenge page. --pw-brand is set from the settings by miner.js. */
+:root { --pw-brand: #f7931a; --pw-bg: #111315; --pw-text: #eceef0; --pw-muted: #8b9299; --pw-tile: #22262a; --pw-ok: #3ccf7e; --pw-brand-text: var(--pw-brand); }
+@media (prefers-color-scheme: light) {
+	/* Bright accent colors are too light for text on white: darken them for text only. */
+	:root { --pw-bg: #f5f5f3; --pw-text: #1a1c1e; --pw-muted: #6a7178; --pw-tile: #e3e5e7; --pw-ok: #16884a; --pw-brand-text: color-mix(in srgb, var(--pw-brand) 55%, #000); }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--pw-bg); color: var(--pw-text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 16px; text-align: center; }
+
+/* The block: 8 x 8 tiles that light up as mining progresses. */
+.pw-block { position: relative; display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; width: min(168px, 46vw); aspect-ratio: 1; margin-bottom: 28px; }
+.pw-block i { border-radius: 3px; background: var(--pw-tile); transition: background-color .25s ease, transform .25s ease; }
+.pw-block i.on { background: var(--pw-brand); }
+.pw-block i.next { background: color-mix(in srgb, var(--pw-brand) 45%, var(--pw-tile)); animation: pw-blink .5s ease-in-out infinite alternate; }
+.pw-check { position: absolute; inset: 22%; width: 56%; height: 56%; fill: none; stroke: #fff; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 24; stroke-dashoffset: 24; opacity: 0; }
+.pw-block.found { animation: pw-lock .45s ease-out; }
+.pw-block.found i { background: var(--pw-brand); }
+.pw-block.found .pw-check { opacity: 1; stroke-dashoffset: 0; transition: stroke-dashoffset .35s .1s ease-out, opacity .1s; }
+@keyframes pw-blink { to { opacity: .45; } }
+@keyframes pw-lock { 40% { transform: scale(1.06); filter: drop-shadow(0 0 18px var(--pw-brand)); } 100% { transform: scale(1); } }
+
+h1 { font-size: 1.35rem; font-weight: 700; line-height: 1.25; margin: 0 0 4px; }
+.pw-height { margin: 0; color: var(--pw-brand-text); font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.pw-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.pw-status.err { position: static; width: auto; height: auto; clip: auto; white-space: normal; margin: 16px 0 0; color: #d63638; font-weight: 600; max-width: 40ch; }
+.pw-details { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px 14px; margin-top: 22px; color: var(--pw-muted); font-size: .72rem; font-variant-numeric: tabular-nums; max-width: 420px; }
+.pw-details b { font-weight: 500; }
+.pw-hash { flex-basis: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .66rem; word-break: break-all; opacity: .85; }
+.pw-hash b { color: var(--pw-brand-text); font-weight: 600; }
+.pw-foot { position: fixed; bottom: 12px; left: 16px; right: 16px; margin: 0; color: var(--pw-muted); font-size: .68rem; display: flex; align-items: center; justify-content: center; gap: 6px; }
+.pw-foot img { width: 16px; height: 16px; border-radius: 3px; }
+a { color: var(--pw-brand-text); }
+
+@media (prefers-reduced-motion: reduce) {
+	.pw-block i, .pw-block.found .pw-check { transition: none; }
+	.pw-block i.next, .pw-block.found { animation: none; }
+}
