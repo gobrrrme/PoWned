@@ -111,7 +111,10 @@ final class Powned_Settings {
 	}
 
 	/**
-	 * Warn when early mode is on but the loader could not be written.
+	 * Warn when the deployment shape defeats the gate: early loader unwritable,
+	 * page-cache drop-ins, and reverse proxies (detected by headers or a private
+	 * REMOTE_ADDR; the headers are never trusted, only used for detection).
+	 * Every notice is dismissible per admin user.
 	 */
 	public static function notice_loader() {
 		$screen = get_current_screen();
@@ -121,8 +124,49 @@ final class Powned_Settings {
 		$s = Powned::settings();
 		if ( ! empty( $s['early'] ) && ! Powned_Loader::installed() && ! Powned_Loader::install() ) {
 			/* translators: %s: directory */
-			echo '<div class="notice notice-warning"><p>' . esc_html( sprintf( __( 'Early check is on, but the loader could not be written to %s. The check still runs, just a little later during loading.', 'powned' ), WPMU_PLUGIN_DIR ) ) . '</p></div>';
+			self::notice( 'loader', sprintf( __( 'Early check is on, but the loader could not be written to %s. The check still runs, just a little later during loading.', 'powned' ), WPMU_PLUGIN_DIR ) );
 		}
+		// Page-cache drop-ins load before WordPress (and before this plugin), so a
+		// cached copy of a protected URL is served without the challenge.
+		if ( defined( 'WP_CACHE' ) && WP_CACHE ) {
+			self::notice( 'cache', __( 'A page cache is active (WP_CACHE). Cached pages are served before the proof-of-work check runs: check your cache plugin’s query-string handling and never cache the protected URLs (LiteSpeed, for one, caches query-string URLs by default).', 'powned' ) );
+		}
+		// Behind a reverse proxy REMOTE_ADDR is the proxy for every visitor, so the
+		// network binding collapses into one shared key.
+		if ( 'none' !== $s['binding'] && isset( $_SERVER['REMOTE_ADDR'] ) // phpcs:ignore WordPress.Security.ValidatedSanitizedInput, WordPress.Security.NonceVerification.Recommended
+			&& false === filter_var( $_SERVER['REMOTE_ADDR'], FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE ) ) {
+			self::notice( 'proxy', __( 'PHP sees a private/reserved REMOTE_ADDR, which usually means a reverse proxy is in front. All visitors then share one network key, so a single solved block unlocks the site for everyone. Have the proxy pass the client IP (and have PHP trust it), or set "Bound to" to "Not bound".', 'powned' ) );
+		}
+		// Detection only: forwarded headers that differ from REMOTE_ADDR mean a
+		// proxy is in front even when its address is public (Cloudflare, Fastly,
+		// Sucuri). The headers are never trusted for the gate.
+		$xff = isset( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ? (string) $_SERVER['HTTP_X_FORWARDED_FOR'] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput, WordPress.Security.NonceVerification.Recommended
+		$cf  = isset( $_SERVER['HTTP_CF_CONNECTING_IP'] ) ? (string) $_SERVER['HTTP_CF_CONNECTING_IP'] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput, WordPress.Security.NonceVerification.Recommended
+		$ra  = isset( $_SERVER['REMOTE_ADDR'] ) ? (string) $_SERVER['REMOTE_ADDR'] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		$xff_first = '' !== $xff ? trim( (string) strtok( $xff, ',' ) ) : '';
+		if ( ( '' !== $xff_first && $xff_first !== $ra ) || ( '' !== $cf && $cf !== $ra ) ) {
+			self::notice( 'proxy_headers', __( 'Forwarded-IP headers (X-Forwarded-For / CF-Connecting-IP) differ from REMOTE_ADDR: a reverse proxy or CDN is in front. Every visitor then shares the proxy’s network key, so one solved block unlocks the site for everyone. This plugin never reads those headers (they are spoofable); configure the proxy to pass the client IP and mark PHP as trusting it, or set "Bound to" to "Not bound".', 'powned' ) );
+		}
+	}
+
+	/**
+	 * One dismissible warning notice per admin user. Dismissal is per user and
+	 * per key, protected by a nonce, and forgotten if the condition returns
+	 * with a different text.
+	 */
+	private static function notice( $key, $message ) {
+		$user = get_current_user_id();
+		if ( isset( $_GET['powned_dismiss'] ) && isset( $_GET['_wpnonce'] ) // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			&& wp_verify_nonce( sanitize_text_field( (string) $_GET['_wpnonce'] ), 'powned_dismiss_' . $key ) // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+			&& sanitize_key( (string) $_GET['powned_dismiss'] ) === $key ) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+			update_user_meta( $user, 'powned_dismissed_' . $key, time() );
+		}
+		if ( get_user_meta( $user, 'powned_dismissed_' . $key, true ) ) {
+			return;
+		}
+		$url = wp_nonce_url( add_query_arg( 'powned_dismiss', $key, admin_url( 'options-general.php?page=powned' ) ), 'powned_dismiss_' . $key );
+		echo '<div class="notice notice-warning is-dismissible"><p>' . esc_html( $message ) . '</p>';
+		echo '<p><a class="button-link" href="' . esc_url( $url ) . '">' . esc_html__( 'Dismiss this notice', 'powned' ) . '</a></p></div>';
 	}
 
 	/**
