@@ -328,6 +328,21 @@ final class Powned {
 		if ( $solved < time() - 15 * MINUTE_IN_SECONDS ) {
 			return;
 		}
+		// Global write budget: at most one counted block per minute across ALL
+		// clients. A per-client window cannot bound the writes: an attacker on
+		// IPv6 with a /48 can rotate the client key forever, and every new key
+		// would reopen the window (plus one or two option rows per window).
+		// Blocks are a sampled statistic; skipping counts never affects the
+		// gate itself.
+		if ( wp_using_ext_object_cache() ) {
+			if ( ! wp_cache_add( 'count_window', 1, self::STATS_GROUP, MINUTE_IN_SECONDS ) ) {
+				return;
+			}
+		} elseif ( get_transient( 'powned_count_window' ) ) {
+			return;
+		} else {
+			set_transient( 'powned_count_window', 1, MINUTE_IN_SECONDS );
+		}
 		$key = 'block_' . $block['salt'];
 		if ( wp_using_ext_object_cache() ) {
 			if ( ! wp_cache_add( $key, 1, self::STATS_GROUP, 15 * MINUTE_IN_SECONDS ) ) {
@@ -339,7 +354,10 @@ final class Powned {
 			set_transient( 'powned_' . $key, 1, 15 * MINUTE_IN_SECONDS );
 		}
 		global $wpdb;
-		$updated = $wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->options} SET option_value = option_value + 1 WHERE option_name = %s", self::BLOCKS_OPTION ) ); // phpcs:ignore WordPress.DB
+		// CAST keeps the arithmetic explicit under strict SQL modes: option_value
+		// is a longtext column and the implicit cast is engine-dependent.
+		$updated = $wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->options} SET option_value = CAST( option_value AS UNSIGNED ) + 1 WHERE option_name = %s", self::BLOCKS_OPTION ) ); // phpcs:ignore WordPress.DB
+
 		if ( ! $updated ) {
 			add_option( self::BLOCKS_OPTION, 1, '', false );
 		}
