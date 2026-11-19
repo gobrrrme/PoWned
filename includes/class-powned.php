@@ -458,7 +458,11 @@ final class Powned {
 		$logo   = '' !== (string) $s['logo_url'] ? (string) $s['logo_url'] : ( function_exists( 'get_site_icon_url' ) ? get_site_icon_url( 96 ) : '' );
 		// "Go back" only to this site, never to a foreign referrer.
 		$back = isset( $_SERVER['HTTP_REFERER'] ) ? (string) $_SERVER['HTTP_REFERER'] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-		if ( wp_parse_url( $back, PHP_URL_HOST ) !== wp_parse_url( home_url(), PHP_URL_HOST ) ) {
+		$back_parts = wp_parse_url( $back );
+		// Same site AND http(s) only: a javascript:/data: URL whose host happens
+		// to match would otherwise land in the "Go back" href.
+		if ( '' === $back || ! isset( $back_parts['scheme'] ) || ! in_array( strtolower( $back_parts['scheme'] ), array( 'http', 'https' ), true )
+			|| ( $back_parts['host'] ?? null ) !== wp_parse_url( home_url(), PHP_URL_HOST ) ) {
 			$back = home_url( '/' );
 		}
 		$data = array(
