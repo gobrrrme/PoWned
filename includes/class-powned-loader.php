@@ -74,5 +74,6 @@ final class Powned_Loader {
 	 */
 	public static function deactivate() {
 		self::remove();
+		wp_clear_scheduled_hook( Powned::ROLLUP_HOOK );
 	}
 }

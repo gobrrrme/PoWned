@@ -28,6 +28,8 @@ What works: make every request cost CPU time. Proof of work. The thing Bitcoin h
 - **Multi-core mining.** One Web Worker per CPU core (up to 4), with a fallback for browsers without workers.
 - **No third parties.** No CAPTCHAs, no external scripts, no fonts from elsewhere, no tracking. Runs under a strict Content-Security-Policy (no inline scripts or styles; needs `worker-src 'self'`).
 - **Block counter.** The settings page shows how many blocks have been mined on your site. Every solved challenge counts once, and the visitor sees which block they are mining: *Block #1,337*.
+- **Checkout protection (optional).** Bots placing unpaid orders through the Store API or the checkout form, holding your stock for an hour each? Switch it on and opening the checkout needs a solved block (most customers already have one from browsing), and orders without one get turned away: classic checkout and Store API, drafts and batch requests included. The thank-you page and payment webhooks stay untouched.
+- **30-day stats.** Blocks mined, average mining time, challenges shown, requests let through and the solve rate, with a small chart per day. Only daily totals are stored, nothing per visitor. Challenge counts ride on your object cache (Redis, Memcached) and are rolled up hourly, so a bot flood never turns into database writes.
 - **Your look.** Accent color, logo (defaults to your site icon), own texts, light and dark mode. English and German built in, language by path prefix for multilingual sites.
 
 ## Installation
@@ -67,6 +69,10 @@ The cookie is strictly necessary for the security of the site and contains no pe
 
 > When you use the shop filters, your browser solves a small computing task and stores the result for 24 hours in the cookie `powned` (plus, for a few seconds, the marker `powned_new`, which counts the solved block once). It protects the site against automated mass requests and contains no personal data.
 
+## Roadmap
+
+- **PoW for forms.** Contact and comment forms mine a block in the background on submit, no puzzle for humans. Every spam message costs the bot CPU time.
+
 ## License
 
 GPL-2.0-or-later. Fork it, run it, PoWn some bots.
@@ -74,3 +80,5 @@ GPL-2.0-or-later. Fork it, run it, PoWn some bots.
 ---
 
 Built by [GoBrrr](https://www.gobrrr.me), your Bitcoin hardware shop from Austria. If PoWned saved your server, [buy us a coffee in sats](https://www.gobrrr.me/donate/).
+
+> **Heads-up:** PoWned was vibecoded and has not seen a lot of real-world testing yet. Please [report any issues](https://github.com/gobrrrme/PoWned/issues) you run into, and feel free to contribute. Pull requests welcome.

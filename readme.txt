@@ -5,7 +5,7 @@ Tags: bots, crawler, proof of work, woocommerce, security
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.0
+Stable tag: 0.3.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -19,6 +19,7 @@ Visitors of protected URLs first solve a small proof of work in their browser: a
 * Difficulty adjusts to server load
 * Bound to the network (/24, /64), the exact IP, or not at all
 * Optional early check before other plugins load
+* Optional checkout protection against unpaid bot orders
 * No external requests, works with a strict Content-Security-Policy
 * Protected query parameters and paths with wildcards, exclusions
 * Accent color, logo, texts; English and German built in
@@ -40,6 +41,14 @@ Search engines should not crawl filter URLs anyway (block them in robots.txt). P
 One strictly necessary cookie, `powned`, with the solved block. It never contains the IP address.
 
 == Changelog ==
+
+= 0.3.0 =
+* Optional checkout protection: opening the checkout needs a solved block, and orders are only accepted with one, in the classic checkout and through the Store API (block checkout, including drafts and batch requests). Stops bots that place unpaid orders and hold stock. The thank-you page and payment webhooks are not affected.
+
+= 0.2.0 =
+* 30-day statistics on the settings page: blocks mined, average mining time, challenges shown, requests let through, solve rate, daily charts.
+* The browser reports the mining time with the one-time block marker.
+* Difficulty selector covers the full allowed range (8 to 28 bits).
 
 = 0.1.0 =
 * First version.

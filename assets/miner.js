@@ -52,8 +52,8 @@
 		if (C.preview === '1') return;
 		var attrs = '; Path=/; SameSite=Lax' + (C.secure === '1' ? '; Secure' : '');
 		document.cookie = C.cookie + '=' + C.challenge + nonce + '.' + C.mac + '; Max-Age=' + C.ttl + attrs;
-		/* One-time marker: the server counts this block once and deletes the marker. */
-		document.cookie = C.cookie + '_new=1; Max-Age=300' + attrs;
+		/* One-time marker with the mining time in ms: the server counts this block once and deletes the marker. */
+		document.cookie = C.cookie + '_new=' + Math.max(2, Date.now() - started) + '; Max-Age=300' + attrs;
 		/* Cookies blocked: stop instead of mining again on every reload. */
 		if (document.cookie.indexOf(C.cookie + '=') === -1) { fail(C.nocookie); return; }
 		/* Loop guard: three solved blocks within 30 seconds mean the cookie does not stick. */

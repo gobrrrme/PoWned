@@ -1,9 +1,9 @@
 <?php
 /**
  * Plugin Name:       PoWned
- * Plugin URI:        https://github.com/gobrrr/powned
+ * Plugin URI:        https://github.com/gobrrrme/PoWned
  * Description:       Protects expensive pages (by default WooCommerce filter URLs) with a small Bitcoin-style proof of work solved in the visitor's browser. Stops crawlers that hammer thousands of URL combinations from rotating IPs, without third-party services, tracking or CAPTCHAs. Difficulty adjusts to server load.
- * Version:           0.1.0
+ * Version:           0.3.0
  * Requires at least: 6.2
  * Requires PHP:      7.4
  * Author:            GoBrrr
@@ -19,7 +19,7 @@
 defined( 'ABSPATH' ) || exit;
 
 if ( ! defined( 'POWNED_VERSION' ) ) {
-	define( 'POWNED_VERSION', '0.1.0' );
+	define( 'POWNED_VERSION', '0.3.0' );
 }
 if ( ! defined( 'POWNED_FILE' ) ) {
 	define( 'POWNED_FILE', __FILE__ );
@@ -32,6 +32,21 @@ require_once __DIR__ . '/includes/class-powned-loader.php';
 Powned::maybe_challenge();
 
 register_activation_hook( __FILE__, array( 'Powned_Loader', 'activate' ) );
+
+// Checkout protection (option): order submission and Store API orders need a solved block.
+add_action( 'woocommerce_checkout_process', array( 'Powned', 'guard_checkout_submit' ), 1 );
+add_filter( 'rest_pre_dispatch', array( 'Powned', 'guard_store_api' ), 10, 3 );
+
+// Hourly: move the per-day counters from the object cache into the statistics.
+add_action( Powned::ROLLUP_HOOK, array( 'Powned', 'rollup' ) );
+add_action(
+	'init',
+	static function () {
+		if ( ! wp_next_scheduled( Powned::ROLLUP_HOOK ) ) {
+			wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', Powned::ROLLUP_HOOK );
+		}
+	}
+);
 register_deactivation_hook( __FILE__, array( 'Powned_Loader', 'deactivate' ) );
 
 if ( is_admin() ) {

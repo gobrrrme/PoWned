@@ -14,7 +14,7 @@ if ( ! defined( 'POWNED_FILE' ) ) {
 	define( 'POWNED_FILE', dirname( __DIR__ ) . '/powned.php' );
 }
 if ( ! defined( 'POWNED_VERSION' ) ) {
-	define( 'POWNED_VERSION', '0.1.0' );
+	define( 'POWNED_VERSION', '0.3.0' );
 }
 
 /**
@@ -28,6 +28,9 @@ final class Powned {
 	const STATS_GROUP       = 'powned';
 	const BLOCKS_OPTION     = 'powned_blocks';
 	const LAST_BLOCK_OPTION = 'powned_last_block';
+	const STATS_OPTION      = 'powned_stats';
+	const STATS_DAYS        = 30;
+	const ROLLUP_HOOK       = 'powned_rollup';
 
 	/**
 	 * Default settings. The query parameters cover WooCommerce's layered navigation.
@@ -38,6 +41,7 @@ final class Powned {
 		return array(
 			'enabled'        => 1,
 			'early'          => 1,
+			'checkout'       => 0,
 			'params'         => "filter_*\nquery_type_*\nmin_price\nmax_price\nrating_filter\ninstock\non_sale",
 			'paths'          => '',
 			'exclude'        => "/wp-admin/*\n/wp-login.php\n/wp-json/*\n/wp-cron.php\n/xmlrpc.php",
@@ -111,6 +115,9 @@ final class Powned {
 				return true;
 			}
 		}
+		if ( ! empty( $s['checkout'] ) && self::is_checkout_path( $path ) ) {
+			return true;
+		}
 		$params = self::lines( $s['params'] );
 		if ( $params ) {
 			foreach ( array_keys( $_GET ) as $key ) { // phpcs:ignore WordPress.Security.NonceVerification
@@ -122,6 +129,65 @@ final class Powned {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Slug of the WooCommerce checkout page (read directly, also works before plugins load).
+	 */
+	public static function checkout_slug() {
+		static $slug = null;
+		if ( null === $slug ) {
+			global $wpdb;
+			$id   = (int) get_option( 'woocommerce_checkout_page_id' );
+			$slug = $id ? (string) $wpdb->get_var( $wpdb->prepare( "SELECT post_name FROM {$wpdb->posts} WHERE ID = %d", $id ) ) : ''; // phpcs:ignore WordPress.DB
+		}
+		return $slug;
+	}
+
+	/**
+	 * Is this the checkout page (also with a language prefix like /de/checkout/ and endpoints
+	 * like order-pay)? The thank-you page after payment is left alone.
+	 *
+	 * @param string $path Request path.
+	 */
+	public static function is_checkout_path( $path ) {
+		$slug = self::checkout_slug();
+		if ( '' === $slug || ! preg_match( '#(^|/)' . preg_quote( $slug, '#' ) . '(/|$)#i', $path ) ) {
+			return false;
+		}
+		return ! preg_match( '#/order-received(/|$)#i', $path );
+	}
+
+	/**
+	 * Checkout protection, order submission: the classic checkout (form and wc-ajax) only takes
+	 * an order with a valid solved block. Hooked to woocommerce_checkout_process.
+	 */
+	public static function guard_checkout_submit() {
+		if ( empty( self::settings()['checkout'] ) || self::valid_cookie() ) {
+			return;
+		}
+		self::count( 'issued' );
+		wc_add_notice( self::strings( self::language() )['checkout'], 'error' );
+	}
+
+	/**
+	 * Checkout protection, Store API (block checkout, headless): placing an order needs a valid
+	 * solved block. The browser has it from opening the checkout page.
+	 *
+	 * @param mixed           $result  Result so far.
+	 * @param WP_REST_Server  $server  Server.
+	 * @param WP_REST_Request $request Request.
+	 * @return mixed
+	 */
+	public static function guard_store_api( $result, $server, $request ) {
+		// All methods: a GET on the checkout route already creates a draft order.
+		if ( empty( self::settings()['checkout'] ) ) {
+			return $result;
+		}
+		if ( ! preg_match( '#^/wc/store(/v\d+)?/(checkout|batch)(/|$)#', (string) $request->get_route() ) || self::valid_cookie() ) {
+			return $result;
+		}
+		return new WP_Error( 'powned_required', self::strings( self::language() )['checkout'], array( 'status' => 403 ) );
 	}
 
 	/**
@@ -324,6 +390,8 @@ final class Powned {
 		if ( ! headers_sent() ) {
 			setcookie( $marker, '', time() - 3600, '/' );
 		}
+		// The marker carries the mining time in milliseconds, measured by the browser.
+		$ms     = (int) $_COOKIE[ $marker ]; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
 		$solved = $block['expiry'] - (int) self::settings()['ttl_hours'] * HOUR_IN_SECONDS;
 		if ( $solved < time() - 15 * MINUTE_IN_SECONDS ) {
 			return;
@@ -345,6 +413,95 @@ final class Powned {
 		}
 		update_option( self::LAST_BLOCK_OPTION, time(), false );
 		wp_cache_delete( self::BLOCKS_OPTION, 'options' );
+		self::record_block( $ms );
+	}
+
+	/**
+	 * Daily statistics, last STATS_DAYS days (UTC). Only counts per day, nothing per visitor.
+	 * Keys: Ymd => issued (challenge pages), passed (requests with a solved block), blocks
+	 * (blocks mined), timed (blocks with a measured mining time), ms (sum of mining times).
+	 *
+	 * @return array<string,array<string,int>>
+	 */
+	public static function stats_raw() {
+		$stats = get_option( self::STATS_OPTION, array() );
+		return is_array( $stats ) ? $stats : array();
+	}
+
+	/**
+	 * Save daily statistics, keeping only the last STATS_DAYS days.
+	 *
+	 * @param array $stats Stats.
+	 */
+	private static function stats_save( $stats ) {
+		krsort( $stats );
+		update_option( self::STATS_OPTION, array_slice( $stats, 0, self::STATS_DAYS + 1, true ), false );
+	}
+
+	/**
+	 * Add a mined block to today's statistics. Blocks are rare, so this database write only
+	 * happens when someone actually solved a challenge.
+	 *
+	 * @param int $ms Mining time in milliseconds (0 or 1 = unknown).
+	 */
+	public static function record_block( $ms ) {
+		$day           = gmdate( 'Ymd' );
+		$stats         = self::stats_raw();
+		$row           = $stats[ $day ] ?? array();
+		$row['blocks'] = (int) ( $row['blocks'] ?? 0 ) + 1;
+		if ( $ms > 1 && $ms < 10 * MINUTE_IN_SECONDS * 1000 ) {
+			$row['timed'] = (int) ( $row['timed'] ?? 0 ) + 1;
+			$row['ms']    = (int) ( $row['ms'] ?? 0 ) + $ms;
+		}
+		$stats[ $day ] = $row;
+		self::stats_save( $stats );
+	}
+
+	/**
+	 * Copy the per-day counters for challenges and let-through requests from the persistent
+	 * object cache into the statistics (hourly by WP-Cron, and when the settings page opens).
+	 * Values only ever go up, so an evicted cache key cannot erase a day.
+	 */
+	public static function rollup() {
+		if ( ! function_exists( 'wp_using_ext_object_cache' ) || ! wp_using_ext_object_cache() ) {
+			return;
+		}
+		$stats   = self::stats_raw();
+		$changed = false;
+		foreach ( array( gmdate( 'Ymd' ), gmdate( 'Ymd', time() - DAY_IN_SECONDS ) ) as $day ) {
+			foreach ( array( 'issued', 'passed' ) as $what ) {
+				$value = (int) wp_cache_get( $what . '_' . $day, self::STATS_GROUP );
+				if ( $value > (int) ( $stats[ $day ][ $what ] ?? 0 ) ) {
+					$stats[ $day ][ $what ] = $value;
+					$changed                = true;
+				}
+			}
+		}
+		if ( $changed ) {
+			self::stats_save( $stats );
+		}
+	}
+
+	/**
+	 * The last STATS_DAYS days, oldest first, with zeros for days without data.
+	 *
+	 * @return array<string,array{issued:int,passed:int,blocks:int,timed:int,ms:int}>
+	 */
+	public static function stats() {
+		$raw = self::stats_raw();
+		$out = array();
+		for ( $i = self::STATS_DAYS - 1; $i >= 0; $i-- ) {
+			$day         = gmdate( 'Ymd', time() - $i * DAY_IN_SECONDS );
+			$row         = $raw[ $day ] ?? array();
+			$out[ $day ] = array(
+				'issued' => (int) ( $row['issued'] ?? 0 ),
+				'passed' => (int) ( $row['passed'] ?? 0 ),
+				'blocks' => (int) ( $row['blocks'] ?? 0 ),
+				'timed'  => (int) ( $row['timed'] ?? 0 ),
+				'ms'     => (int) ( $row['ms'] ?? 0 ),
+			);
+		}
+		return $out;
 	}
 
 	/**
@@ -410,6 +567,7 @@ final class Powned {
 				'nojs'    => 'This page needs JavaScript.',
 				'back'    => 'Go back',
 				'cookie'  => 'Cookie %1$s, %2$d h, strictly necessary.',
+				'checkout' => 'The anti-bot check for this order is missing or has expired. Please reload the checkout page and place your order again.',
 			),
 			'de' => array(
 				'title'   => 'Angefragte Seite wird gemined',
@@ -426,6 +584,7 @@ final class Powned {
 				'nojs'    => 'Diese Seite benötigt JavaScript.',
 				'back'    => 'Zurück',
 				'cookie'  => 'Cookie %1$s, %2$d h, technisch notwendig.',
+				'checkout' => 'Die Prüfung gegen Bots fehlt für diese Bestellung oder ist abgelaufen. Bitte lade die Kassenseite neu und schicke die Bestellung noch einmal ab.',
 			),
 		);
 		$t = $all[ $lang ] ?? $all['en'];

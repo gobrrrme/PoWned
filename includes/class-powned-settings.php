@@ -71,6 +71,7 @@ final class Powned_Settings {
 		$out = array(
 			'enabled'        => empty( $in['enabled'] ) ? 0 : 1,
 			'early'          => empty( $in['early'] ) ? 0 : 1,
+			'checkout'       => empty( $in['checkout'] ) ? 0 : 1,
 			'params'         => $txt( $in['params'] ?? '' ),
 			'paths'          => $txt( $in['paths'] ?? '' ),
 			'exclude'        => $txt( $in['exclude'] ?? '' ),
@@ -143,6 +144,85 @@ final class Powned_Settings {
 	}
 
 	/**
+	 * Small column chart (server-rendered SVG, no script) of one daily value.
+	 *
+	 * @param array  $stats Output of Powned::stats().
+	 * @param string $key   Value key.
+	 * @param string $label Accessible label.
+	 * @param string $color Bar color.
+	 * @return string SVG.
+	 */
+	private static function chart( $stats, $key, $label, $color ) {
+		$w   = 600;
+		$h   = 90;
+		$n   = count( $stats );
+		$max = max( 1, max( array_column( $stats, $key ) ) );
+		$bw  = $w / $n;
+		$svg = '<svg viewBox="0 0 ' . $w . ' ' . ( $h + 16 ) . '" role="img" aria-label="' . esc_attr( $label ) . '" style="width:100%;max-width:640px;height:auto;display:block">';
+		$i   = 0;
+		foreach ( $stats as $day => $row ) {
+			$v    = (int) $row[ $key ];
+			$bh   = $v ? max( 2, $h * $v / $max ) : 0;
+			$date = gmdate( 'd.m.', strtotime( $day ) );
+			$svg .= '<rect x="' . round( $i * $bw + 1, 1 ) . '" y="' . round( $h - $bh, 1 ) . '" width="' . round( $bw - 2, 1 ) . '" height="' . round( $bh, 1 ) . '" rx="2" fill="' . esc_attr( $color ) . '"><title>' . esc_html( $date . ': ' . number_format_i18n( $v ) ) . '</title></rect>';
+			// A label every 7 days, counted back from today; edge labels aligned inside.
+			if ( 0 === ( $n - 1 - $i ) % 7 ) {
+				$anchor = 0 === $i ? 'start' : ( $n - 1 === $i ? 'end' : 'middle' );
+				$x      = 0 === $i ? 0 : ( $n - 1 === $i ? $w : $i * $bw + $bw / 2 );
+				$svg   .= '<text x="' . round( $x, 1 ) . '" y="' . ( $h + 13 ) . '" font-size="10" text-anchor="' . $anchor . '" fill="#646970">' . esc_html( $date ) . '</text>';
+			}
+			$i++;
+		}
+		$svg .= '<line x1="0" x2="' . $w . '" y1="' . $h . '" y2="' . $h . '" stroke="#c3c4c7"/>';
+		return $svg . '</svg>';
+	}
+
+	/**
+	 * Card with the statistics of the last 30 days.
+	 */
+	private static function render_stats() {
+		Powned::rollup();
+		$st     = Powned::stats();
+		$issued = array_sum( array_column( $st, 'issued' ) );
+		$passed = array_sum( array_column( $st, 'passed' ) );
+		$blocks = array_sum( array_column( $st, 'blocks' ) );
+		$timed  = array_sum( array_column( $st, 'timed' ) );
+		$ms     = array_sum( array_column( $st, 'ms' ) );
+		$cache  = wp_using_ext_object_cache();
+		$brand  = (string) Powned::settings()['brand_color'];
+		$cell   = 'padding:4px 24px 4px 0;font-variant-numeric:tabular-nums';
+		?>
+		<div class="card" style="max-width:none">
+			<h2 class="title"><?php esc_html_e( 'Last 30 days', 'powned' ); ?></h2>
+			<table role="presentation" style="margin-bottom:12px">
+				<tr><td style="<?php echo esc_attr( $cell ); ?>"><?php esc_html_e( 'Blocks mined', 'powned' ); ?></td><th style="<?php echo esc_attr( $cell ); ?>;text-align:right"><?php echo esc_html( number_format_i18n( $blocks ) ); ?></th></tr>
+				<tr><td style="<?php echo esc_attr( $cell ); ?>"><?php esc_html_e( 'Average mining time', 'powned' ); ?></td><th style="<?php echo esc_attr( $cell ); ?>;text-align:right"><?php echo esc_html( $timed ? number_format_i18n( $ms / $timed / 1000, 1 ) . ' s' : '–' ); ?></th></tr>
+				<?php if ( $cache ) : ?>
+					<tr><td style="<?php echo esc_attr( $cell ); ?>"><?php esc_html_e( 'Challenges shown', 'powned' ); ?></td><th style="<?php echo esc_attr( $cell ); ?>;text-align:right"><?php echo esc_html( number_format_i18n( $issued ) ); ?></th></tr>
+					<tr><td style="<?php echo esc_attr( $cell ); ?>"><?php esc_html_e( 'Requests let through', 'powned' ); ?></td><th style="<?php echo esc_attr( $cell ); ?>;text-align:right"><?php echo esc_html( number_format_i18n( $passed ) ); ?></th></tr>
+					<tr><td style="<?php echo esc_attr( $cell ); ?>"><?php esc_html_e( 'Solve rate (blocks per challenge)', 'powned' ); ?></td><th style="<?php echo esc_attr( $cell ); ?>;text-align:right"><?php echo esc_html( $issued ? number_format_i18n( 100 * $blocks / $issued, 1 ) . ' %' : '–' ); ?></th></tr>
+				<?php endif; ?>
+			</table>
+			<?php if ( $cache ) : ?>
+				<p style="margin:12px 0 2px"><strong><?php esc_html_e( 'Challenges shown per day', 'powned' ); ?></strong></p>
+				<?php echo self::chart( $st, 'issued', __( 'Challenges shown per day', 'powned' ), '#8c8f94' ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
+			<?php endif; ?>
+			<p style="margin:12px 0 2px"><strong><?php esc_html_e( 'Blocks mined per day', 'powned' ); ?></strong></p>
+			<?php echo self::chart( $st, 'blocks', __( 'Blocks mined per day', 'powned' ), $brand ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
+			<p class="description">
+				<?php
+				echo esc_html(
+					$cache
+						? __( 'A low solve rate means mostly bots got the challenge and gave up. Only daily totals are stored, nothing per visitor. Days in UTC.', 'powned' )
+						: __( 'Blocks and mining time are always counted. Challenges shown and requests let through need a persistent object cache (Redis, Memcached), so that a flood of requests never turns into database writes. Days in UTC.', 'powned' )
+				);
+				?>
+			</p>
+		</div>
+		<?php
+	}
+
+	/**
 	 * Page.
 	 */
 	public static function page() {
@@ -206,6 +286,8 @@ final class Powned_Settings {
 				<p><a class="button" href="<?php echo esc_url( add_query_arg( 'powned_preview', '1', home_url( '/' ) ) ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Preview the challenge page', 'powned' ); ?></a></p>
 			</div>
 
+			<?php self::render_stats(); ?>
+
 			<form method="post" action="options.php">
 				<?php settings_fields( 'powned' ); ?>
 				<h2><?php esc_html_e( 'Protection', 'powned' ); ?></h2>
@@ -221,6 +303,9 @@ final class Powned_Settings {
 					<tr><th scope="row"><label for="pg-exclude"><?php esc_html_e( 'Never protect', 'powned' ); ?></label></th>
 						<td><textarea id="pg-exclude" class="large-text code" rows="5" name="<?php echo $name( 'exclude' ); // phpcs:ignore ?>"><?php echo esc_textarea( $s['exclude'] ); ?></textarea>
 						<p class="description"><?php esc_html_e( 'Paths that are always let through, one per line. The admin area and login are always excluded.', 'powned' ); ?></p></td></tr>
+					<tr><th scope="row"><?php esc_html_e( 'Checkout', 'powned' ); ?></th>
+						<td><label><input type="checkbox" name="<?php echo $name( 'checkout' ); // phpcs:ignore ?>" value="1" <?php checked( $s['checkout'] ); ?>> <?php esc_html_e( 'Also protect the checkout', 'powned' ); ?></label>
+						<p class="description"><?php esc_html_e( 'Opening the checkout needs a solved block (most customers already have one from browsing), and orders are only accepted with one: classic checkout and Store API (block checkout). Stops bots that place unpaid orders and hold your stock. The thank-you page after payment and payment webhooks are not affected.', 'powned' ); ?></p></td></tr>
 					<tr><th scope="row"><?php esc_html_e( 'Early check', 'powned' ); ?></th>
 						<td><label><input type="checkbox" name="<?php echo $name( 'early' ); // phpcs:ignore ?>" value="1" <?php checked( $s['early'] ); ?>> <?php esc_html_e( 'Run the check before other plugins load (adds a small file to mu-plugins)', 'powned' ); ?></label>
 						<p class="description"><?php esc_html_e( 'Recommended: a crawler request then costs almost no server time.', 'powned' ); ?></p></td></tr>

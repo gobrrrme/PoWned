@@ -1,0 +1,24 @@
+# Builds the installable plugin ZIP (folder "powned/", without README and screenshots)
+# and attaches it to the GitHub release when a version tag like v0.2.0 is pushed.
+name: Release ZIP
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build powned.zip
+        run: |
+          mkdir -p build/powned
+          rsync -a --exclude .git --exclude .github --exclude screenshots --exclude README.md --exclude build ./ build/powned/
+          cd build && zip -r "powned-${GITHUB_REF_NAME#v}.zip" powned
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: build/powned-*.zip
