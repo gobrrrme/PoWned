@@ -102,6 +102,25 @@ While the lockdown is active, a red notice shows on every admin page, so nobody 
 
 Tuning: 18 bits is about 260,000 hashes on average, well under a second on current phones. Each extra bit doubles the work. The settings page shows the expected time for every level.
 
+## Security notes
+
+Thanks to [VirtusVerbis](https://github.com/gobrrrme/PoWned/issues/6) for the review.
+
+- **Friction, not authentication.** Anyone who solves the proof of work can see the protected pages. PoWned makes bulk requests expensive, it does not decide who is allowed in.
+- **Reverse proxy.** The block is bound to `REMOTE_ADDR`. If your own nginx, Apache or haproxy sits in front of WordPress, PoWned sees the proxy address, all visitors share one network and one solved block works for everyone. Return the real client address with the `powned_client_ip` filter, from a mu-plugin that loads before `powned-early.php` (for example `mu-plugins/00-powned-proxy.php`). Only read a forwarded header there if your proxy always sets it; without a proxy in front, anyone can send one.
+
+  ```php
+  <?php
+  add_filter( 'powned_client_ip', function ( $ip ) {
+      return $_SERVER['HTTP_X_REAL_IP'] ?? $ip; // set by your own proxy only
+  } );
+  ```
+- **The secret.** Challenges and blocks are signed with a secret stored in the option `powned_secret`. Whoever has it (from a leaked backup or database copy) can create valid blocks without mining. *Rotate secret* on the settings page creates a new one; every visitor then mines once more.
+- **Cookies.** The browser stores a freshly solved block in `powned_new`. On the next request the server takes it over as `powned`, an HttpOnly cookie that scripts on the page cannot read, and deletes `powned_new`. A stolen block only works from the same network (/24 or /64) until it expires.
+- **Status codes.** The challenge page is sent with 403 by default, so caches and crawlers do not store it as content. 429 and 503 also work; the lockdown always uses 503 with `Retry-After`. 200 is possible but not recommended: some caches and crawlers would keep the challenge page as if it were your page.
+- **Ad blockers.** Scripts and styles have neutral names (`pw-core.js`, `pw-ui.js`, `pw-bg.js`, `pw.css`). Cryptominer filter lists block files called `miner.js`. Security tools that watch CPU usage might still flag mining in rare cases.
+- **Smaller points.** The signature is 64 bits of HMAC-SHA256 and can only be guessed online, one request per try. HEAD requests get no body. Texts from the `powned_strings` filter are escaped on output.
+
 ## Requirements
 
 WordPress 6.2+, PHP 7.4+. The load-based difficulty reads `/proc/cpuinfo` and `sys_getloadavg()` (Linux). Without them, the base difficulty applies.
@@ -110,7 +129,7 @@ WordPress 6.2+, PHP 7.4+. The load-based difficulty reads `/proc/cpuinfo` and `s
 
 The cookie is strictly necessary for the security of the site and contains no personal data in clear text. Put a line in your privacy policy, for example:
 
-> When you use the shop filters, the checkout or a form, your browser solves a small computing task and stores the result for 24 hours in the cookie `powned` (plus, for a few seconds, the marker `powned_new`, which counts the solved block once). It protects the site against automated mass requests and contains no personal data.
+> When you use the shop filters, the checkout or a form, your browser solves a small computing task and stores the result for 24 hours in the cookie `powned` (right after solving briefly in `powned_new`, until the server takes it over). It protects the site against automated mass requests and contains no personal data.
 
 ## Roadmap
 

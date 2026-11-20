@@ -5,7 +5,7 @@ Tags: bots, crawler, proof of work, woocommerce, security
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.4.0
+Stable tag: 0.4.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -47,6 +47,13 @@ No list of gateways is needed. PoWned only checks actions a person performs in t
 One strictly necessary cookie, `powned`, with the solved block. It never contains the IP address.
 
 == Changelog ==
+
+= 0.4.1 =
+* Neutral file names for scripts and styles (pw-core.js, pw-ui.js, pw-bg.js, pw.css): ad blockers with cryptominer lists blocked miner.js, so visitors with them could not get past the challenge page.
+* The solved block is now an HttpOnly cookie, taken over by the server from the freshly mined one.
+* Filter powned_client_ip for sites behind their own reverse proxy.
+* "Rotate secret" button.
+* Security notes in the README.
 
 = 0.4.0 =
 * Background mining: on pages with protected actions the browser solves a block without a challenge page; forms wait until it is ready and are then sent on automatically.

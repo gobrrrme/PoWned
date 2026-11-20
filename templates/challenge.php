@@ -27,7 +27,7 @@ $powned_height = function_exists( 'number_format_i18n' ) ? number_format_i18n( $
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title><?php echo $powned_e( ! empty( $s['stealth'] ) ? $t['loading'] : $t['title'] ); ?></title>
-<link rel="stylesheet" href="<?php echo $powned_e( $base . 'challenge.css?ver=' . $ver ); ?>">
+<link rel="stylesheet" href="<?php echo $powned_e( $base . 'pw.css?ver=' . $ver ); ?>">
 </head>
 <body>
 <main id="powned"<?php echo ! empty( $s['stealth'] ) ? ' class="pw-stealth"' : ''; ?><?php echo $powned_attrs; // phpcs:ignore WordPress.Security.EscapeOutput ?>>
@@ -51,7 +51,7 @@ $powned_height = function_exists( 'number_format_i18n' ) ? number_format_i18n( $
 		<?php echo $powned_e( $t['text'] . ' ' . sprintf( $t['cookie'], Powned::COOKIE, (int) $s['ttl_hours'] ) ); ?>
 	</p>
 </main>
-<script src="<?php echo $powned_e( $base . 'worker.js?ver=' . $ver ); ?>"></script>
-<script src="<?php echo $powned_e( $base . 'miner.js?ver=' . $ver ); ?>"></script>
+<script src="<?php echo $powned_e( $base . 'pw-core.js?ver=' . $ver ); ?>"></script>
+<script src="<?php echo $powned_e( $base . 'pw-ui.js?ver=' . $ver ); ?>"></script>
 </body>
 </html>

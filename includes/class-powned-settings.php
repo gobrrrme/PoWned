@@ -22,6 +22,7 @@ final class Powned_Settings {
 		add_action( 'update_option_' . Powned::OPTION, array( __CLASS__, 'sync_loader' ), 10, 2 );
 		add_action( 'admin_notices', array( __CLASS__, 'notice_loader' ) );
 		add_action( 'admin_notices', array( __CLASS__, 'notice_lockdown' ) );
+		add_action( 'admin_post_powned_rotate_secret', array( __CLASS__, 'rotate_secret' ) );
 	}
 
 	/**
@@ -138,6 +139,22 @@ final class Powned_Settings {
 		} else {
 			Powned_Loader::remove();
 		}
+	}
+
+	/**
+	 * New signing secret: every solved block and open challenge becomes invalid, visitors mine
+	 * once more. For when the secret may have leaked (backup, database copy).
+	 */
+	public static function rotate_secret() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Not allowed.', 'powned' ), 403 );
+		}
+		check_admin_referer( 'powned_rotate_secret' );
+		update_option( Powned::SECRET_OPTION, bin2hex( random_bytes( 32 ) ), true );
+		add_settings_error( 'powned', 'powned_rotated', __( 'New secret created. All solved blocks are invalid now, visitors mine once more.', 'powned' ), 'success' );
+		set_transient( 'settings_errors', get_settings_errors(), 30 );
+		wp_safe_redirect( admin_url( 'admin.php?page=powned&settings-updated=1' ) );
+		exit;
 	}
 
 	/**
@@ -340,7 +357,8 @@ final class Powned_Settings {
 					);
 					?>
 				</p>
-				<p><a class="button" href="<?php echo esc_url( add_query_arg( 'powned_preview', '1', home_url( '/' ) ) ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Preview the challenge page', 'powned' ); ?></a></p>
+				<p><a class="button" href="<?php echo esc_url( add_query_arg( 'powned_preview', '1', home_url( '/' ) ) ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Preview the challenge page', 'powned' ); ?></a>
+					<a class="button" href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=powned_rotate_secret' ), 'powned_rotate_secret' ) ); ?>" onclick="return confirm(<?php echo esc_attr( wp_json_encode( __( 'Create a new secret? All solved blocks become invalid and every visitor mines once more. Do this if a backup or copy of your database may have leaked.', 'powned' ) ) ); ?>);"><?php esc_html_e( 'Rotate secret', 'powned' ); ?></a></p>
 			</div>
 
 			<?php self::render_stats(); ?>

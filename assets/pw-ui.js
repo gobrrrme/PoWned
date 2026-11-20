@@ -1,5 +1,5 @@
 /*
- * PoWned challenge page: start one miner per CPU core (at most 4), fill the block as mining
+ * PoWned challenge page (pw-ui.js; neutral file names, since ad blockers block files called miner.js): start one miner per CPU core (at most 4), fill the block as mining
  * progresses, store the solved block in a cookie and reload the requested page.
  */
 (function () {
@@ -51,11 +51,10 @@
 		$('pw-status').textContent = C.found;
 		if (C.preview === '1') return;
 		var attrs = '; Path=/; SameSite=Lax' + (C.secure === '1' ? '; Secure' : '');
-		document.cookie = C.cookie + '=' + C.challenge + nonce + '.' + C.mac + '; Max-Age=' + C.ttl + attrs;
-		/* One-time marker with the mining time in ms: the server counts this block once and deletes the marker. */
-		document.cookie = C.cookie + '_new=' + Math.max(2, Date.now() - started) + '; Max-Age=300' + attrs;
+		/* Fresh block plus mining time in ms. The server takes it over as HttpOnly cookie, counts it once and deletes this one. */
+		document.cookie = C.cookie + '_new=' + C.challenge + nonce + '.' + C.mac + '_' + Math.max(2, Date.now() - started) + '; Max-Age=' + C.ttl + attrs;
 		/* Cookies blocked: stop instead of mining again on every reload. */
-		if (document.cookie.indexOf(C.cookie + '=') === -1) { fail(C.nocookie); return; }
+		if (document.cookie.indexOf(C.cookie + '_new=') === -1) { fail(C.nocookie); return; }
 		/* Loop guard: three solved blocks within 30 seconds mean the cookie does not stick. */
 		var tries = 1;
 		try {

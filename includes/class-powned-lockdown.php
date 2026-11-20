@@ -98,10 +98,8 @@ final class Powned_Lockdown {
 		if ( ! self::applies() ) {
 			return;
 		}
-		$block = Powned::valid_cookie();
-		if ( $block ) {
+		if ( Powned::valid_cookie() ) {
 			Powned::count( 'passed' );
-			Powned::maybe_count_block( $block );
 			return;
 		}
 		if ( 'log' === $mode ) {
@@ -166,7 +164,9 @@ final class Powned_Lockdown {
 				break;
 			}
 		}
+		// Reverse DNS needs the address the request really comes from, not a filtered one.
 		$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? (string) $_SERVER['REMOTE_ADDR'] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		$ip = Powned::client_ip() ?: $ip;
 		if ( ! $suffixes || ! filter_var( $ip, FILTER_VALIDATE_IP ) ) {
 			return false;
 		}

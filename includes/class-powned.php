@@ -14,7 +14,7 @@ if ( ! defined( 'POWNED_FILE' ) ) {
 	define( 'POWNED_FILE', dirname( __DIR__ ) . '/powned.php' );
 }
 if ( ! defined( 'POWNED_VERSION' ) ) {
-	define( 'POWNED_VERSION', '0.4.0' );
+	define( 'POWNED_VERSION', '0.4.1' );
 }
 
 /**
@@ -25,6 +25,7 @@ final class Powned {
 	const OPTION        = 'powned_settings';
 	const SECRET_OPTION = 'powned_secret';
 	const COOKIE        = 'powned';
+	const NEW_COOKIE    = 'powned_new';
 	const STATS_GROUP       = 'powned';
 	const BLOCKS_OPTION     = 'powned_blocks';
 	const LAST_BLOCK_OPTION = 'powned_last_block';
@@ -99,19 +100,15 @@ final class Powned {
 			self::send_challenge_json();
 		}
 		if ( ! self::is_protected() ) {
-			// A block mined in the background: count it on the next request that reaches PHP.
-			if ( ! empty( $_COOKIE[ self::COOKIE . '_new' ] ) ) {
-				$block = self::valid_cookie();
-				if ( $block ) {
-					self::maybe_count_block( $block );
-				}
+			// A freshly mined block (background miner): take it over on the next request that
+			// reaches PHP, so it becomes HttpOnly and is counted.
+			if ( ! empty( $_COOKIE[ self::NEW_COOKIE ] ) ) {
+				self::valid_cookie();
 			}
 			return;
 		}
-		$block = self::valid_cookie();
-		if ( $block ) {
+		if ( self::valid_cookie() ) {
 			self::count( 'passed' );
-			self::maybe_count_block( $block );
 			return;
 		}
 		self::count( 'issued' );
@@ -265,7 +262,7 @@ final class Powned {
 	 */
 	public static function client_key() {
 		$binding = self::settings()['binding'];
-		$ip      = isset( $_SERVER['REMOTE_ADDR'] ) ? (string) $_SERVER['REMOTE_ADDR'] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		$ip      = self::client_ip();
 		$bin     = 'none' === $binding ? false : @inet_pton( $ip ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 		if ( false === $bin ) {
 			$net = 'any';
@@ -275,6 +272,20 @@ final class Powned {
 			$net = bin2hex( substr( $bin, 0, 4 === strlen( $bin ) ? 3 : 8 ) );
 		}
 		return substr( hash_hmac( 'sha256', 'client|' . $binding . '|' . $net, self::secret() ), 0, 12 );
+	}
+
+	/**
+	 * Address of the visitor. REMOTE_ADDR by default. Behind your own reverse proxy, return the
+	 * real client address with the filter powned_client_ip (from a mu-plugin that loads before
+	 * powned-early.php, e.g. 00-powned-proxy.php). Never trust a forwarded header without a
+	 * proxy in front that sets it, anyone can send one.
+	 */
+	public static function client_ip() {
+		$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? (string) $_SERVER['REMOTE_ADDR'] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		if ( function_exists( 'apply_filters' ) ) {
+			$ip = (string) apply_filters( 'powned_client_ip', $ip );
+		}
+		return $ip;
 	}
 
 	/**
@@ -369,13 +380,53 @@ final class Powned {
 	}
 
 	/**
-	 * The solved block from the cookie, if it is valid for this client.
-	 * Format: 1.<expiry>.<client>.<bits>.<salt>.<nonce>.<mac>
+	 * The solved block, if it is valid for this client.
+	 *
+	 * The browser stores a freshly solved block in "<COOKIE>_new" (with the mining time). The
+	 * server takes it over: it sets the block as HttpOnly cookie "<COOKIE>", so scripts on the
+	 * page cannot read it later, counts it once and deletes the fresh cookie.
 	 *
 	 * @return array{expiry:int,salt:string}|null
 	 */
 	public static function valid_cookie() {
+		$fresh = isset( $_COOKIE[ self::NEW_COOKIE ] ) ? (string) $_COOKIE[ self::NEW_COOKIE ] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		if ( '' !== $fresh ) {
+			unset( $_COOKIE[ self::NEW_COOKIE ] );
+			$parts = explode( '_', $fresh, 2 );
+			$block = self::check_block( $parts[0] );
+			if ( ! headers_sent() ) {
+				setcookie( self::NEW_COOKIE, '', time() - 3600, '/' );
+			}
+			if ( $block ) {
+				$_COOKIE[ self::COOKIE ] = $parts[0];
+				if ( ! headers_sent() ) {
+					setcookie(
+						self::COOKIE,
+						$parts[0],
+						array(
+							'expires'  => $block['expiry'],
+							'path'     => '/',
+							'secure'   => function_exists( 'is_ssl' ) && is_ssl(),
+							'httponly' => true,
+							'samesite' => 'Lax',
+						)
+					);
+				}
+				self::count_block( $block, isset( $parts[1] ) ? (int) $parts[1] : 0 );
+				return $block;
+			}
+		}
 		$raw = isset( $_COOKIE[ self::COOKIE ] ) ? (string) $_COOKIE[ self::COOKIE ] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		return self::check_block( $raw );
+	}
+
+	/**
+	 * Check a solved block. Format: 1.<expiry>.<client>.<bits>.<salt>.<nonce>.<mac>
+	 *
+	 * @param string $raw Block.
+	 * @return array{expiry:int,salt:string}|null
+	 */
+	public static function check_block( $raw ) {
 		if ( ! preg_match( '/^1\.(\d{10})\.([0-9a-f]{12})\.(\d{1,2})\.([0-9a-f]{12})\.(\d{1,12})\.([0-9a-f]{16})$/', $raw, $m ) ) {
 			return null;
 		}
@@ -402,23 +453,14 @@ final class Powned {
 	}
 
 	/**
-	 * Count a freshly mined block once. The miner sets the short-lived cookie
-	 * "<COOKIE>_new" next to the solved block; the server deletes it again. Each block counts
-	 * at most once (remembered by its random salt for 15 minutes) and only while it is fresh,
-	 * so resending the marker can neither inflate the counter nor cause database writes.
+	 * Count a freshly mined block once. Each block counts at most once (remembered by its random
+	 * salt for 15 minutes) and only while it is fresh, so resending it can neither inflate the
+	 * counter nor cause database writes.
 	 *
-	 * @param array{expiry:int,salt:string} $block Valid block from the cookie.
+	 * @param array{expiry:int,salt:string} $block Valid block.
+	 * @param int                           $ms    Mining time measured by the browser.
 	 */
-	public static function maybe_count_block( $block ) {
-		$marker = self::COOKIE . '_new';
-		if ( empty( $_COOKIE[ $marker ] ) ) {
-			return;
-		}
-		if ( ! headers_sent() ) {
-			setcookie( $marker, '', time() - 3600, '/' );
-		}
-		// The marker carries the mining time in milliseconds, measured by the browser.
-		$ms     = (int) $_COOKIE[ $marker ]; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+	public static function count_block( $block, $ms ) {
 		$solved = $block['expiry'] - (int) self::settings()['ttl_hours'] * HOUR_IN_SECONDS;
 		if ( $solved < time() - 15 * MINUTE_IN_SECONDS ) {
 			return;
@@ -440,7 +482,7 @@ final class Powned {
 		}
 		update_option( self::LAST_BLOCK_OPTION, time(), false );
 		wp_cache_delete( self::BLOCKS_OPTION, 'options' );
-		self::record_block( $ms );
+		self::record_block( max( 0, $ms ) );
 	}
 
 	/**
@@ -636,6 +678,16 @@ final class Powned {
 		if ( ! defined( 'DONOTCACHEPAGE' ) ) {
 			define( 'DONOTCACHEPAGE', true );
 		}
+		if ( ! headers_sent() ) {
+			header( 'Content-Type: application/json; charset=utf-8' );
+			header( 'Cache-Control: no-store, max-age=0' );
+			header( 'X-Robots-Tag: noindex, nofollow' );
+		}
+		// Already holding a valid block (HttpOnly, so the page cannot see it): nothing to mine.
+		if ( empty( $_GET['fresh'] ) && self::valid_cookie() ) { // phpcs:ignore WordPress.Security.NonceVerification
+			echo '{"valid":true}';
+			exit;
+		}
 		$c = self::new_challenge();
 		self::count( 'issued' );
 		if ( ! headers_sent() ) {
@@ -685,7 +737,7 @@ final class Powned {
 			'cookie'    => self::COOKIE,
 			'ttl'       => (int) $s['ttl_hours'] * HOUR_IN_SECONDS,
 			'secure'    => is_ssl() ? 1 : 0,
-			'worker'    => $base . 'worker.js?ver=' . $ver,
+			'worker'    => $base . 'pw-core.js?ver=' . $ver,
 			'brand'     => preg_match( '/^#[0-9a-f]{3,8}$/i', (string) $s['brand_color'] ) ? (string) $s['brand_color'] : '#f7931a',
 			'found'     => $t['found'],
 			'nocookie'  => $t['nocook'],

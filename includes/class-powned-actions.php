@@ -65,10 +65,8 @@ final class Powned_Actions {
 		if ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() ) {
 			return true;
 		}
-		$block = Powned::valid_cookie();
-		if ( $block ) {
+		if ( Powned::valid_cookie() ) {
 			Powned::count( 'passed' );
-			Powned::maybe_count_block( $block );
 			return true;
 		}
 		Powned::count( 'refused' );
@@ -121,7 +119,7 @@ final class Powned_Actions {
 	 */
 	public static function enqueue() {
 		if ( ! wp_script_is( self::HANDLE, 'registered' ) ) {
-			wp_register_script( self::HANDLE, plugins_url( 'assets/background.js', POWNED_FILE ), array(), POWNED_VERSION, true );
+			wp_register_script( self::HANDLE, plugins_url( 'assets/pw-bg.js', POWNED_FILE ), array(), POWNED_VERSION, true );
 		}
 		wp_enqueue_script( self::HANDLE );
 	}
@@ -149,7 +147,7 @@ final class Powned_Actions {
 		}
 		$attrs = array(
 			'endpoint' => add_query_arg( 'powned_challenge', '1', home_url( '/' ) ),
-			'worker'   => plugins_url( 'assets/worker.js', POWNED_FILE ) . '?ver=' . POWNED_VERSION,
+			'worker'   => plugins_url( 'assets/pw-core.js', POWNED_FILE ) . '?ver=' . POWNED_VERSION,
 			'cookie'   => Powned::COOKIE,
 			'min'      => (int) Powned::settings()['base_bits'],
 			'forms'    => self::FORMS,
