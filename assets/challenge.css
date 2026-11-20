@@ -32,7 +32,15 @@ h1 { font-size: 1.35rem; font-weight: 700; line-height: 1.25; margin: 0 0 4px; }
 .pw-foot img { width: 16px; height: 16px; border-radius: 3px; }
 a { color: var(--pw-brand-text); }
 
+/* Stealth mode: only a spinner, shown after a short delay so fast solves show nothing at all. */
+.pw-spin { display: none; }
+.pw-stealth .pw-block, .pw-stealth h1, .pw-stealth .pw-height, .pw-stealth .pw-details, .pw-stealth .pw-foot { display: none; }
+.pw-stealth .pw-spin { display: block; width: 34px; height: 34px; border: 3px solid var(--pw-tile); border-top-color: var(--pw-brand); border-radius: 50%; opacity: 0; animation: pw-show .2s .6s forwards, pw-rot .8s linear infinite; }
+@keyframes pw-rot { to { transform: rotate(360deg); } }
+@keyframes pw-show { to { opacity: 1; } }
+
 @media (prefers-reduced-motion: reduce) {
+	.pw-stealth .pw-spin { animation: pw-show .2s .6s forwards; }
 	.pw-block i, .pw-block.found .pw-check { transition: none; }
 	.pw-block i.next, .pw-block.found { animation: none; }
 }

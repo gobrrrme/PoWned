@@ -21,13 +21,23 @@ final class Powned_Settings {
 		add_filter( 'plugin_action_links_' . plugin_basename( POWNED_FILE ), array( __CLASS__, 'action_link' ) );
 		add_action( 'update_option_' . Powned::OPTION, array( __CLASS__, 'sync_loader' ), 10, 2 );
 		add_action( 'admin_notices', array( __CLASS__, 'notice_loader' ) );
+		add_action( 'admin_notices', array( __CLASS__, 'notice_lockdown' ) );
 	}
 
 	/**
-	 * Menu entry.
+	 * Menu entry: own item in the admin menu, right below Settings.
 	 */
 	public static function menu() {
-		add_options_page( __( 'PoWned', 'powned' ), __( 'PoWned', 'powned' ), 'manage_options', 'powned', array( __CLASS__, 'page' ) );
+		add_menu_page( __( 'PoWned', 'powned' ), __( 'PoWned', 'powned' ), 'manage_options', 'powned', array( __CLASS__, 'page' ), self::icon(), 81 );
+	}
+
+	/**
+	 * Menu icon: a block of tiles, one still being mined. WordPress colours it to match the
+	 * admin colour scheme.
+	 */
+	private static function icon() {
+		$svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="black" d="M2 2h7v7H2zM11 2h7v7h-7zM2 11h7v7H2z"/><path fill="black" fill-opacity=".45" d="M11 11h7v7h-7z"/></svg>';
+		return 'data:image/svg+xml;base64,' . base64_encode( $svg ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions
 	}
 
 	/**
@@ -37,7 +47,7 @@ final class Powned_Settings {
 	 * @return string[]
 	 */
 	public static function action_link( $links ) {
-		array_unshift( $links, '<a href="' . esc_url( admin_url( 'options-general.php?page=powned' ) ) . '">' . esc_html__( 'Settings', 'powned' ) . '</a>' );
+		array_unshift( $links, '<a href="' . esc_url( admin_url( 'admin.php?page=powned' ) ) . '">' . esc_html__( 'Settings', 'powned' ) . '</a>' );
 		return $links;
 	}
 
@@ -72,6 +82,16 @@ final class Powned_Settings {
 			'enabled'        => empty( $in['enabled'] ) ? 0 : 1,
 			'early'          => empty( $in['early'] ) ? 0 : 1,
 			'checkout'       => empty( $in['checkout'] ) ? 0 : 1,
+			'guard_coupon'   => empty( $in['guard_coupon'] ) ? 0 : 1,
+			'guard_login'    => empty( $in['guard_login'] ) ? 0 : 1,
+			'guard_forms'    => empty( $in['guard_forms'] ) ? 0 : 1,
+			'stealth'        => empty( $in['stealth'] ) ? 0 : 1,
+			'lockdown'       => in_array( $in['lockdown'] ?? '', array( 'off', 'log', 'on', 'auto' ), true ) ? $in['lockdown'] : 'off',
+			'lockdown_hours' => max( 0, min( 168, (int) ( $in['lockdown_hours'] ?? $d['lockdown_hours'] ) ) ),
+			'lockdown_since' => 0,
+			'lockdown_load'  => max( 0.5, min( 20, (float) str_replace( ',', '.', (string) ( $in['lockdown_load'] ?? $d['lockdown_load'] ) ) ) ),
+			'lockdown_crawlers' => empty( $in['lockdown_crawlers'] ) ? 0 : 1,
+			'lockdown_agents'   => $txt( $in['lockdown_agents'] ?? '' ),
 			'params'         => $txt( $in['params'] ?? '' ),
 			'paths'          => $txt( $in['paths'] ?? '' ),
 			'exclude'        => $txt( $in['exclude'] ?? '' ),
@@ -88,6 +108,15 @@ final class Powned_Settings {
 			'title'          => sanitize_text_field( (string) ( $in['title'] ?? '' ) ),
 			'text'           => sanitize_textarea_field( (string) ( $in['text'] ?? '' ) ),
 		);
+		// Manual lockdown: the countdown starts when it is switched on (or its duration changes).
+		$old = Powned::settings();
+		if ( 'on' === $out['lockdown'] ) {
+			$keep = 'on' === $old['lockdown'] && (int) $old['lockdown_hours'] === $out['lockdown_hours'] && Powned_Lockdown::active();
+			$out['lockdown_since'] = $keep ? (int) $old['lockdown_since'] : time();
+		}
+		if ( 'log' === $out['lockdown'] && 'log' !== $old['lockdown'] ) {
+			delete_transient( Powned_Lockdown::LOG_KEY );
+		}
 		// Never protect the admin area or the login: an administrator must always get in.
 		foreach ( array( '/wp-admin/*', '/wp-login.php' ) as $must ) {
 			if ( ! in_array( $must, Powned::lines( $out['exclude'] ), true ) ) {
@@ -112,11 +141,38 @@ final class Powned_Settings {
 	}
 
 	/**
+	 * Lockdown reminder on every admin page while it is enforcing (or logging).
+	 */
+	public static function notice_lockdown() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		$mode = Powned_Lockdown::mode();
+		$link = ' <a href="' . esc_url( admin_url( 'admin.php?page=powned#powned-lockdown' ) ) . '">' . esc_html__( 'Lockdown settings', 'powned' ) . '</a>';
+		if ( 'log' === $mode ) {
+			echo '<div class="notice notice-info"><p>' . esc_html__( 'PoWned lockdown is in log-only mode: nothing is blocked, the paths it would challenge are being counted.', 'powned' ) . $link . '</p></div>'; // phpcs:ignore WordPress.Security.EscapeOutput
+			return;
+		}
+		if ( ! Powned_Lockdown::active() ) {
+			return;
+		}
+		if ( 'auto' === $mode ) {
+			$msg = __( 'PoWned lockdown is active: the server is under heavy load, every page view needs a solved block. It switches off by itself 15 minutes after the load drops.', 'powned' );
+		} elseif ( Powned_Lockdown::remaining() ) {
+			/* translators: %s: time left, e.g. "2 hours" */
+			$msg = sprintf( __( 'PoWned lockdown is active: every page view needs a solved block. Search engines, link previews and price comparison sites only see the challenge page. Switches off by itself in %s.', 'powned' ), human_time_diff( time(), time() + Powned_Lockdown::remaining() ) );
+		} else {
+			$msg = __( 'PoWned lockdown is active without a time limit: every page view needs a solved block. Search engines, link previews and price comparison sites only see the challenge page. Remember to switch it off.', 'powned' );
+		}
+		echo '<div class="notice notice-error"><p><strong>' . esc_html( $msg ) . '</strong>' . $link . '</p></div>'; // phpcs:ignore WordPress.Security.EscapeOutput
+	}
+
+	/**
 	 * Warn when early mode is on but the loader could not be written.
 	 */
 	public static function notice_loader() {
 		$screen = get_current_screen();
-		if ( ! $screen || 'settings_page_powned' !== $screen->id ) {
+		if ( ! $screen || 'toplevel_page_powned' !== $screen->id ) {
 			return;
 		}
 		$s = Powned::settings();
@@ -238,6 +294,7 @@ final class Powned_Settings {
 		?>
 		<div class="wrap">
 			<h1><?php esc_html_e( 'PoWned', 'powned' ); ?></h1>
+			<?php settings_errors(); ?>
 			<p style="max-width:72ch"><?php esc_html_e( 'Visitors of protected URLs first solve a small proof of work in their browser: double SHA-256 below a target, like Bitcoin mining. Humans wait about a second once; crawlers that rotate IPs pay that for every single request. No third-party service, no tracking, nothing stored on the server.', 'powned' ); ?></p>
 
 			<div class="card" style="max-width:none">
@@ -303,13 +360,79 @@ final class Powned_Settings {
 					<tr><th scope="row"><label for="pg-exclude"><?php esc_html_e( 'Never protect', 'powned' ); ?></label></th>
 						<td><textarea id="pg-exclude" class="large-text code" rows="5" name="<?php echo $name( 'exclude' ); // phpcs:ignore ?>"><?php echo esc_textarea( $s['exclude'] ); ?></textarea>
 						<p class="description"><?php esc_html_e( 'Paths that are always let through, one per line. The admin area and login are always excluded.', 'powned' ); ?></p></td></tr>
-					<tr><th scope="row"><?php esc_html_e( 'Checkout', 'powned' ); ?></th>
-						<td><label><input type="checkbox" name="<?php echo $name( 'checkout' ); // phpcs:ignore ?>" value="1" <?php checked( $s['checkout'] ); ?>> <?php esc_html_e( 'Also protect the checkout', 'powned' ); ?></label>
-						<p class="description"><?php esc_html_e( 'Opening the checkout needs a solved block (most customers already have one from browsing), and orders are only accepted with one: classic checkout and Store API (block checkout). Stops bots that place unpaid orders and hold your stock. The thank-you page after payment and payment webhooks are not affected.', 'powned' ); ?></p></td></tr>
+					<tr><th scope="row"><?php esc_html_e( 'Protected actions', 'powned' ); ?></th>
+						<td><fieldset>
+							<label><input type="checkbox" name="<?php echo $name( 'checkout' ); // phpcs:ignore ?>" value="1" <?php checked( $s['checkout'] ); ?>> <?php esc_html_e( 'Checkout and express payment buttons', 'powned' ); ?></label><br>
+							<label><input type="checkbox" name="<?php echo $name( 'guard_coupon' ); // phpcs:ignore ?>" value="1" <?php checked( $s['guard_coupon'] ); ?>> <?php esc_html_e( 'Coupon codes', 'powned' ); ?></label><br>
+							<label><input type="checkbox" name="<?php echo $name( 'guard_login' ); // phpcs:ignore ?>" value="1" <?php checked( $s['guard_login'] ); ?>> <?php esc_html_e( 'Login forms (wp-login.php and the WooCommerce account page)', 'powned' ); ?></label><br>
+							<label><input type="checkbox" name="<?php echo $name( 'guard_forms' ); // phpcs:ignore ?>" value="1" <?php checked( $s['guard_forms'] ); ?>> <?php esc_html_e( 'Contact Form 7 and comments', 'powned' ); ?></label>
+						</fieldset>
+						<p class="description"><?php esc_html_e( 'These actions are only accepted with a solved block. On the pages where they happen (cart, checkout, product pages, login, forms) the browser mines in the background, and forms wait the moment it takes. No challenge page, no puzzle. Visitors without JavaScript cannot use protected actions. Logged-in users always pass. Payment webhooks and gateway callbacks are never checked, whatever the payment provider.', 'powned' ); ?></p>
+						<p class="description"><?php esc_html_e( 'Checkout also shows the challenge page when someone opens the checkout without a block.', 'powned' ); ?></p></td></tr>
+					<tr><th scope="row"><?php esc_html_e( 'Stealth mode', 'powned' ); ?></th>
+						<td><label><input type="checkbox" name="<?php echo $name( 'stealth' ); // phpcs:ignore ?>" value="1" <?php checked( $s['stealth'] ); ?>> <?php esc_html_e( 'Challenge page shows only a small spinner instead of the block', 'powned' ); ?></label>
+						<p class="description"><?php esc_html_e( 'The spinner appears after 0.6 seconds, so quick solves look like a normal page load.', 'powned' ); ?></p></td></tr>
 					<tr><th scope="row"><?php esc_html_e( 'Early check', 'powned' ); ?></th>
 						<td><label><input type="checkbox" name="<?php echo $name( 'early' ); // phpcs:ignore ?>" value="1" <?php checked( $s['early'] ); ?>> <?php esc_html_e( 'Run the check before other plugins load (adds a small file to mu-plugins)', 'powned' ); ?></label>
 						<p class="description"><?php esc_html_e( 'Recommended: a crawler request then costs almost no server time.', 'powned' ); ?></p></td></tr>
 				</table>
+
+				<h2 id="powned-lockdown"><?php esc_html_e( 'Full lockdown', 'powned' ); ?></h2>
+				<div class="notice notice-warning inline"><p><strong><?php esc_html_e( 'For emergencies only. While the lockdown is active, every page view needs a solved block. Before you switch it on:', 'powned' ); ?></strong></p>
+					<ul style="list-style:disc;margin-left:20px">
+						<li><?php esc_html_e( 'Search engines only see the challenge page. It is sent as "503, try again later", so a few hours do no harm, but days can cost rankings or pages in the index. Keep "Let search engines through" on.', 'powned' ); ?></li>
+						<li><?php esc_html_e( 'Link previews in messengers and social networks, price comparison sites, product feeds (Google Merchant and similar) and uptime monitors cannot read your pages. Feeds may report errors and ads may be paused.', 'powned' ); ?></li>
+						<li><?php esc_html_e( 'Visitors without JavaScript or with cookies blocked cannot open the site at all. On old phones, a raised difficulty can take several seconds.', 'powned' ); ?></li>
+						<li><?php esc_html_e( 'Every new visitor waits a moment on the first page.', 'powned' ); ?></li>
+						<li><?php esc_html_e( 'Pages your cache serves before WordPress loads are not checked (cheap anyway). The lockdown slows down bots that drive a real browser, it does not stop them, and it does not help against network-level DDoS.', 'powned' ); ?></li>
+						<li><?php esc_html_e( 'Not affected: payment webhooks and callbacks of any provider, the REST API, Ajax, feeds, sitemaps, robots.txt, the thank-you page, logged-in users. Try "Log only" first to see which pages would be challenged.', 'powned' ); ?></li>
+					</ul></div>
+				<table class="form-table" role="presentation">
+					<tr><th scope="row"><label for="pg-lockdown"><?php esc_html_e( 'Mode', 'powned' ); ?></label></th>
+						<td><select id="pg-lockdown" name="<?php echo $name( 'lockdown' ); // phpcs:ignore ?>" data-was="<?php echo esc_attr( $s['lockdown'] ); ?>">
+							<option value="off" <?php selected( $s['lockdown'], 'off' ); ?>><?php esc_html_e( 'Off', 'powned' ); ?></option>
+							<option value="log" <?php selected( $s['lockdown'], 'log' ); ?>><?php esc_html_e( 'Log only (blocks nothing, shows what would be challenged)', 'powned' ); ?></option>
+							<option value="auto" <?php selected( $s['lockdown'], 'auto' ); ?>><?php esc_html_e( 'Automatic (switches on under heavy load)', 'powned' ); ?></option>
+							<option value="on" <?php selected( $s['lockdown'], 'on' ); ?>><?php esc_html_e( 'On', 'powned' ); ?></option>
+						</select>
+						<p class="description"><?php
+						if ( 'off' !== Powned_Lockdown::mode() && 'log' !== Powned_Lockdown::mode() ) {
+							echo esc_html( Powned_Lockdown::active() ? __( 'Status: active right now.', 'powned' ) : __( 'Status: not active right now.', 'powned' ) );
+						}
+						?></p></td></tr>
+					<tr><th scope="row"><label for="pg-ld-hours"><?php esc_html_e( 'Switch off after', 'powned' ); ?></label></th>
+						<td><input id="pg-ld-hours" type="number" min="0" max="168" class="small-text" name="<?php echo $name( 'lockdown_hours' ); // phpcs:ignore ?>" value="<?php echo (int) $s['lockdown_hours']; ?>"> <?php esc_html_e( 'hours (mode "On"; 0 = never, not recommended)', 'powned' ); ?></td></tr>
+					<tr><th scope="row"><label for="pg-ld-load"><?php esc_html_e( 'Automatic at load', 'powned' ); ?></label></th>
+						<td><input id="pg-ld-load" type="number" min="0.5" max="20" step="0.1" class="small-text" name="<?php echo $name( 'lockdown_load' ); // phpcs:ignore ?>" value="<?php echo esc_attr( (string) $s['lockdown_load'] ); ?>"> <?php esc_html_e( 'per CPU core, 5-minute average', 'powned' ); ?>
+						<p class="description"><?php esc_html_e( 'Mode "Automatic": switches on when the load stays above this value and off again 15 minutes after it drops. 2.0 means twice as much work waiting as the server has cores.', 'powned' ); ?></p></td></tr>
+					<tr><th scope="row"><?php esc_html_e( 'Search engines', 'powned' ); ?></th>
+						<td><label><input type="checkbox" name="<?php echo $name( 'lockdown_crawlers' ); // phpcs:ignore ?>" value="1" <?php checked( $s['lockdown_crawlers'] ); ?>> <?php esc_html_e( 'Let search engines through (Google, Bing, Apple, DuckDuckGo, Yandex)', 'powned' ); ?></label>
+						<p class="description"><?php esc_html_e( 'Verified by reverse DNS, so bots that only pretend to be Googlebot are not let through. Results are cached for a day.', 'powned' ); ?></p></td></tr>
+					<tr><th scope="row"><label for="pg-ld-agents"><?php esc_html_e( 'Let through by user agent', 'powned' ); ?></label></th>
+						<td><textarea id="pg-ld-agents" class="large-text code" rows="3" name="<?php echo $name( 'lockdown_agents' ); // phpcs:ignore ?>" placeholder="UptimeRobot&#10;Mastodon"><?php echo esc_textarea( $s['lockdown_agents'] ); ?></textarea>
+						<p class="description"><?php esc_html_e( 'One per line, part of the user agent, for monitoring or feeds you rely on. User agents are easy to fake, so keep this list short. Paths are excluded in "Never protect" above.', 'powned' ); ?></p></td></tr>
+					<?php
+					$log = get_transient( Powned_Lockdown::LOG_KEY );
+					if ( is_array( $log ) && $log ) :
+						arsort( $log );
+						?>
+					<tr><th scope="row"><?php esc_html_e( 'Log', 'powned' ); ?></th>
+						<td><p class="description"><?php esc_html_e( 'Pages the lockdown would have challenged (requests without a solved block), most frequent first. Look for pages that machines must reach, and add them to "Never protect".', 'powned' ); ?></p>
+						<table class="widefat striped" style="max-width:640px"><tbody>
+						<?php foreach ( array_slice( $log, 0, 25, true ) as $path => $n ) : ?>
+							<tr><td><code><?php echo esc_html( $path ); ?></code></td><td style="text-align:right"><?php echo esc_html( number_format_i18n( $n ) ); ?></td></tr>
+						<?php endforeach; ?>
+						</tbody></table></td></tr>
+					<?php endif; ?>
+				</table>
+				<script>
+				document.getElementById('pg-lockdown').form.addEventListener('submit', function (e) {
+					var sel = document.getElementById('pg-lockdown'), v = sel.value;
+					if ((v === 'on' || v === 'auto') && v !== sel.dataset.was && !window.confirm(<?php echo wp_json_encode( __( "Switch on the full lockdown?\n\nWhile it is active, search engines, link previews, price comparison sites and visitors without JavaScript only see the challenge page. Payment webhooks keep working.", 'powned' ) ); ?>)) {
+						e.preventDefault();
+					}
+				});
+				</script>
 
 				<h2><?php esc_html_e( 'Difficulty', 'powned' ); ?></h2>
 				<table class="form-table" role="presentation">

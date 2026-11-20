@@ -14,7 +14,7 @@ if ( ! defined( 'POWNED_FILE' ) ) {
 	define( 'POWNED_FILE', dirname( __DIR__ ) . '/powned.php' );
 }
 if ( ! defined( 'POWNED_VERSION' ) ) {
-	define( 'POWNED_VERSION', '0.3.0' );
+	define( 'POWNED_VERSION', '0.4.0' );
 }
 
 /**
@@ -42,6 +42,16 @@ final class Powned {
 			'enabled'        => 1,
 			'early'          => 1,
 			'checkout'       => 0,
+			'guard_coupon'   => 0,
+			'guard_login'    => 0,
+			'guard_forms'    => 0,
+			'stealth'        => 0,
+			'lockdown'       => 'off',
+			'lockdown_hours' => 6,
+			'lockdown_since' => 0,
+			'lockdown_load'  => 2.0,
+			'lockdown_crawlers' => 1,
+			'lockdown_agents'   => '',
 			'params'         => "filter_*\nquery_type_*\nmin_price\nmax_price\nrating_filter\ninstock\non_sale",
 			'paths'          => '',
 			'exclude'        => "/wp-admin/*\n/wp-login.php\n/wp-json/*\n/wp-cron.php\n/xmlrpc.php",
@@ -82,7 +92,20 @@ final class Powned {
 		}
 		define( 'POWNED_CHECKED', true );
 		$s = self::settings();
-		if ( empty( $s['enabled'] ) || ( defined( 'WP_CLI' ) && WP_CLI ) || ( defined( 'DOING_CRON' ) && DOING_CRON ) || ! self::is_protected() ) {
+		if ( empty( $s['enabled'] ) || ( defined( 'WP_CLI' ) && WP_CLI ) || ( defined( 'DOING_CRON' ) && DOING_CRON ) ) {
+			return;
+		}
+		if ( isset( $_GET['powned_challenge'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
+			self::send_challenge_json();
+		}
+		if ( ! self::is_protected() ) {
+			// A block mined in the background: count it on the next request that reaches PHP.
+			if ( ! empty( $_COOKIE[ self::COOKIE . '_new' ] ) ) {
+				$block = self::valid_cookie();
+				if ( $block ) {
+					self::maybe_count_block( $block );
+				}
+			}
 			return;
 		}
 		$block = self::valid_cookie();
@@ -163,11 +186,11 @@ final class Powned {
 	 * an order with a valid solved block. Hooked to woocommerce_checkout_process.
 	 */
 	public static function guard_checkout_submit() {
-		if ( empty( self::settings()['checkout'] ) || self::valid_cookie() ) {
+		$s = self::settings();
+		if ( empty( $s['enabled'] ) || empty( $s['checkout'] ) || Powned_Actions::passes() ) {
 			return;
 		}
-		self::count( 'issued' );
-		wc_add_notice( self::strings( self::language() )['checkout'], 'error' );
+		wc_add_notice( '<span class="powned-retry"></span>' . esc_html( self::strings( Powned_Actions::language() )['checkout'] ), 'error' );
 	}
 
 	/**
@@ -181,13 +204,17 @@ final class Powned {
 	 */
 	public static function guard_store_api( $result, $server, $request ) {
 		// All methods: a GET on the checkout route already creates a draft order.
-		if ( empty( self::settings()['checkout'] ) ) {
+		$s     = self::settings();
+		if ( empty( $s['enabled'] ) ) {
 			return $result;
 		}
-		if ( ! preg_match( '#^/wc/store(/v\d+)?/(checkout|batch)(/|$)#', (string) $request->get_route() ) || self::valid_cookie() ) {
+		$route = (string) $request->get_route();
+		$hit   = ( ! empty( $s['checkout'] ) && preg_match( '#^/wc/store(/v\d+)?/(checkout|batch)(/|$)#', $route ) )
+			|| ( ! empty( $s['guard_coupon'] ) && preg_match( '#^/wc/store(/v\d+)?/cart/apply-coupon(/|$)#', $route ) );
+		if ( ! $hit || Powned_Actions::passes() ) {
 			return $result;
 		}
-		return new WP_Error( 'powned_required', self::strings( self::language() )['checkout'], array( 'status' => 403 ) );
+		return new WP_Error( 'powned_required', self::strings( Powned_Actions::language() )['action'], array( 'status' => 403 ) );
 	}
 
 	/**
@@ -567,7 +594,9 @@ final class Powned {
 				'nojs'    => 'This page needs JavaScript.',
 				'back'    => 'Go back',
 				'cookie'  => 'Cookie %1$s, %2$d h, strictly necessary.',
-				'checkout' => 'The anti-bot check for this order is missing or has expired. Please reload the checkout page and place your order again.',
+				'checkout' => 'The anti-bot check for this order had expired and is being renewed. If the order is not placed automatically in a few seconds, please place it again.',
+				'action'   => 'The anti-bot check is missing or has expired. Please reload the page and try again (JavaScript needed).',
+				'loading'  => 'Loading …',
 			),
 			'de' => array(
 				'title'   => 'Angefragte Seite wird gemined',
@@ -584,7 +613,9 @@ final class Powned {
 				'nojs'    => 'Diese Seite benötigt JavaScript.',
 				'back'    => 'Zurück',
 				'cookie'  => 'Cookie %1$s, %2$d h, technisch notwendig.',
-				'checkout' => 'Die Prüfung gegen Bots fehlt für diese Bestellung oder ist abgelaufen. Bitte lade die Kassenseite neu und schicke die Bestellung noch einmal ab.',
+				'checkout' => 'Die Prüfung gegen Bots für diese Bestellung war abgelaufen und wird erneuert. Falls die Bestellung nicht in ein paar Sekunden automatisch abgeschickt wird, schicke sie bitte noch einmal ab.',
+				'action'   => 'Die Prüfung gegen Bots fehlt oder ist abgelaufen. Bitte lade die Seite neu und versuche es noch einmal (JavaScript nötig).',
+				'loading'  => 'Wird geladen …',
 			),
 		);
 		$t = $all[ $lang ] ?? $all['en'];
@@ -599,11 +630,38 @@ final class Powned {
 	}
 
 	/**
+	 * Challenge for the background miner, as JSON. Stateless and cheap (one HMAC), never cached.
+	 */
+	public static function send_challenge_json() {
+		if ( ! defined( 'DONOTCACHEPAGE' ) ) {
+			define( 'DONOTCACHEPAGE', true );
+		}
+		$c = self::new_challenge();
+		self::count( 'issued' );
+		if ( ! headers_sent() ) {
+			header( 'Content-Type: application/json; charset=utf-8' );
+			header( 'Cache-Control: no-store, max-age=0' );
+			header( 'X-Robots-Tag: noindex, nofollow' );
+		}
+		echo wp_json_encode( // phpcs:ignore WordPress.Security.EscapeOutput
+			array(
+				'challenge' => $c['challenge'],
+				'mac'       => $c['mac'],
+				'bits'      => $c['bits'],
+				'ttl'       => (int) self::settings()['ttl_hours'] * HOUR_IN_SECONDS,
+				'secure'    => is_ssl(),
+			)
+		);
+		exit;
+	}
+
+	/**
 	 * Send the challenge page and stop.
 	 *
-	 * @param bool $preview Admin preview (status 200, nothing counted).
+	 * @param bool     $preview Admin preview (status 200, nothing counted).
+	 * @param int|null $status  HTTP status instead of the configured one (lockdown: 503).
 	 */
-	public static function render_challenge( $preview = false ) {
+	public static function render_challenge( $preview = false, $status = null ) {
 		if ( ! defined( 'DONOTCACHEPAGE' ) ) {
 			define( 'DONOTCACHEPAGE', true );
 		}
@@ -634,7 +692,11 @@ final class Powned {
 			'preview'   => $preview ? 1 : 0,
 		);
 		if ( ! headers_sent() ) {
-			http_response_code( $preview ? 200 : max( 200, min( 599, (int) $s['status'] ) ) );
+			$code = $preview ? 200 : max( 200, min( 599, (int) ( $status ?? $s['status'] ) ) );
+			http_response_code( $code );
+			if ( 503 === $code || 429 === $code ) {
+				header( 'Retry-After: ' . ( class_exists( 'Powned_Lockdown' ) ? Powned_Lockdown::RETRY_AFTER : 600 ) );
+			}
 			header( 'Content-Type: text/html; charset=utf-8' );
 			header( 'Cache-Control: no-store, max-age=0' );
 			header( 'X-Robots-Tag: noindex, nofollow' );

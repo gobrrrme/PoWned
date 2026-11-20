@@ -5,7 +5,7 @@
  * Configuration travels in data attributes.
  *
  * Available: $t (strings), $data (miner config), $base (assets URL), $ver, $logo, $back, $c,
- * $lang, $s, $height.
+ * $lang, $s, $height. Stealth mode ($s['stealth']) shows only a small spinner.
  *
  * @package Powned
  */
@@ -26,11 +26,12 @@ $powned_height = function_exists( 'number_format_i18n' ) ? number_format_i18n( $
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
-<title><?php echo $powned_e( $t['title'] ); ?></title>
+<title><?php echo $powned_e( ! empty( $s['stealth'] ) ? $t['loading'] : $t['title'] ); ?></title>
 <link rel="stylesheet" href="<?php echo $powned_e( $base . 'challenge.css?ver=' . $ver ); ?>">
 </head>
 <body>
-<main id="powned"<?php echo $powned_attrs; // phpcs:ignore WordPress.Security.EscapeOutput ?>>
+<main id="powned"<?php echo ! empty( $s['stealth'] ) ? ' class="pw-stealth"' : ''; ?><?php echo $powned_attrs; // phpcs:ignore WordPress.Security.EscapeOutput ?>>
+	<div class="pw-spin" aria-hidden="true"></div>
 	<div class="pw-block" id="pw-block" aria-hidden="true">
 		<?php echo str_repeat( '<i></i>', 64 ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
 		<svg class="pw-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>

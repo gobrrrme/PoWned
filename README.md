@@ -28,7 +28,9 @@ What works: make every request cost CPU time. Proof of work. The thing Bitcoin h
 - **Multi-core mining.** One Web Worker per CPU core (up to 4), with a fallback for browsers without workers.
 - **No third parties.** No CAPTCHAs, no external scripts, no fonts from elsewhere, no tracking. Runs under a strict Content-Security-Policy (no inline scripts or styles; needs `worker-src 'self'`).
 - **Block counter.** The settings page shows how many blocks have been mined on your site. Every solved challenge counts once, and the visitor sees which block they are mining: *Block #1,337*.
-- **Checkout protection (optional).** Bots placing unpaid orders through the Store API or the checkout form, holding your stock for an hour each? Switch it on and opening the checkout needs a solved block (most customers already have one from browsing), and orders without one get turned away: classic checkout and Store API, drafts and batch requests included. The thank-you page and payment webhooks stay untouched.
+- **Protected actions (optional).** Orders, coupon codes, logins, Contact Form 7 and comments are only accepted with a solved block. The browser mines it in the background on the pages where these actions happen, so humans never see a challenge page or a puzzle. Forms that are sent before the block is ready wait the fraction of a second it takes, then go out on their own. Details below.
+- **Stealth mode (optional).** The challenge page shows a small spinner instead of the block, and only after 0.6 seconds. A quick solve looks like a normal page load.
+- **Full lockdown (optional, for emergencies).** Every page view needs a solved block. Manual with an automatic switch-off, or automatic under heavy load. Read the warnings below before you use it.
 - **30-day stats.** Blocks mined, average mining time, challenges shown, requests let through and the solve rate, with a small chart per day. Only daily totals are stored, nothing per visitor. Challenge counts ride on your object cache (Redis, Memcached) and are rolled up hourly, so a bot flood never turns into database writes.
 - **Your look.** Accent color, logo (defaults to your site icon), own texts, light and dark mode. English and German built in, language by path prefix for multilingual sites.
 
@@ -36,9 +38,9 @@ What works: make every request cost CPU time. Proof of work. The thing Bitcoin h
 
 1. Download this repository as ZIP (*Code → Download ZIP*) or grab a release.
 2. In WordPress: *Plugins → Add New → Upload Plugin*, pick the ZIP, activate.
-3. Open *Settings → PoWned*. Check the protected parameters, set your accent color, hit *Preview the challenge page*.
+3. Open *PoWned* in the admin menu. Check the protected parameters, set your accent color, hit *Preview the challenge page*.
 
-The defaults protect WooCommerce filters out of the box (`filter_*`, `query_type_*`, `min_price`, `max_price`, `rating_filter`, `instock`, `on_sale`). The admin area and the login are always excluded, so you cannot lock yourself out.
+The defaults protect WooCommerce filters out of the box (`filter_*`, `query_type_*`, `min_price`, `max_price`, `rating_filter`, `instock`, `on_sale`). Everything else is off until you switch it on. The admin area and the login page are never replaced by a challenge page. If you protect login forms and something goes wrong, `wp option patch update powned_settings guard_login 0` switches it off again.
 
 Keep search engines away from filter URLs in your robots.txt (`Disallow: /*?*filter_`). They would only see the challenge page there anyway.
 
@@ -49,6 +51,47 @@ Keep search engines away from filter URLs in your robots.txt (`Disallow: /*?*fil
 | ![Dark](screenshots/challenge-dark.png) | ![Light mobile](screenshots/challenge-light-mobile.png) |
 
 Settings: [screenshots/settings.png](screenshots/settings.png)
+
+## Protected actions
+
+Switch them on one by one under *Protected actions*:
+
+| Action | What is checked | Where the browser mines |
+|---|---|---|
+| Checkout and express payment buttons | Classic checkout, Store API checkout (drafts and batch requests too). Opening the checkout without a block also shows the challenge page. | Cart, checkout, product pages, as soon as the page loads (express buttons live in iframes, clicks there cannot be seen) |
+| Coupon codes | Refused before WooCommerce looks the code up, so guessing codes gets expensive | Cart and checkout |
+| Login forms | `wp-login.php` and the WooCommerce account form. Without a block the password is not even checked, so bots cannot make your server compute password hashes. XML-RPC and application passwords are left alone. | Login page, account page, when someone starts typing |
+| Contact Form 7, comments | A submission without a block counts as spam | Pages with a form, when someone starts using it |
+
+If a block expires during checkout (or the customer switches from Wi-Fi to mobile data), the order is refused once, the browser mines a new block and places the order again by itself.
+
+Logged-in users always pass. Visitors without JavaScript cannot use protected actions.
+
+**Payment providers are never touched.** PoWned does not keep a list of allowed gateways, which would never be complete. It only checks actions a person performs in a browser. Webhooks and callbacks (Stripe, Klarna, Mollie, BTCPay, PayPal and the hundreds of others) reach WordPress through `?wc-api=`, the REST API or Ajax and answer before PoWned looks at anything.
+
+## Full lockdown
+
+For when you are under heavy attack. Every page view needs a solved block, not just filters and checkout. Modes:
+
+- **Log only:** blocks nothing, counts the pages that would have been challenged. Use this first to see whether anything you need would be caught.
+- **On:** switches itself off after a set number of hours (6 by default).
+- **Automatic:** switches on when the 5-minute load per CPU core stays above a threshold, and off again 15 minutes after it drops.
+
+What stays open, whatever you run: payment webhooks and callbacks of any provider, the REST API, Ajax, feeds, sitemaps, `robots.txt`, the thank-you page, POST requests, explicit JSON or XML requests, logged-in users. Real search engine crawlers (Google, Bing, Apple, DuckDuckGo, Yandex) are let through when you keep that option on; they are verified by reverse DNS, so a bot that only claims to be Googlebot is not. You can also let through user agents of monitoring services or feeds you rely on.
+
+While the lockdown is active, a red notice shows on every admin page, so nobody forgets it.
+
+### Before you switch it on
+
+- **Search engines and SEO.** Without the crawler exception, search engines only see the challenge page. It is sent as `503 Service Unavailable` with `Retry-After`, the correct signal for "temporarily down", so a few hours do no harm. Days can cost rankings or pages in the index.
+- **Link previews.** Links shared in messengers and social networks show no title or image.
+- **Price comparison sites, product feeds, marketplaces.** Google Merchant and similar services cannot fetch your product pages. Feeds may report errors and ads may be paused.
+- **Uptime monitors** may report your site as down.
+- **No JavaScript, no cookies, no entry.** Tor Browser on its safest level, some privacy extensions and some screen reader setups.
+- **Old phones.** With a raised difficulty under load, mining can take several seconds and scare people away.
+- **First page is slower** for every new visitor.
+- **Page caches.** Pages your cache serves before WordPress loads are not checked. Cheap anyway, but not everything is "locked".
+- **No silver bullet.** Bots that drive a real browser get slowed down and pay for every page, they are not stopped. Against network-level DDoS, PoWned does nothing; that is a job for your firewall or host.
 
 ## How it works
 
@@ -67,11 +110,13 @@ WordPress 6.2+, PHP 7.4+. The load-based difficulty reads `/proc/cpuinfo` and `s
 
 The cookie is strictly necessary for the security of the site and contains no personal data in clear text. Put a line in your privacy policy, for example:
 
-> When you use the shop filters, your browser solves a small computing task and stores the result for 24 hours in the cookie `powned` (plus, for a few seconds, the marker `powned_new`, which counts the solved block once). It protects the site against automated mass requests and contains no personal data.
+> When you use the shop filters, the checkout or a form, your browser solves a small computing task and stores the result for 24 hours in the cookie `powned` (plus, for a few seconds, the marker `powned_new`, which counts the solved block once). It protects the site against automated mass requests and contains no personal data.
 
 ## Roadmap
 
-- **PoW for forms.** Contact and comment forms mine a block in the background on submit, no puzzle for humans. Every spam message costs the bot CPU time.
+- **Honeypot links.** Invisible links that robots.txt forbids. Whoever follows them anyway gets a higher difficulty for their network.
+- **Difficulty per area.** Checkout, coupons and login can cost more than browsing.
+- **Pay per crawl.** Bots that want your data in bulk pay a few sats over Lightning (HTTP 402) instead of mining.
 
 ## License
 
