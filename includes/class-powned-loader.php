@@ -41,9 +41,25 @@ final class Powned_Loader {
 		$plugin = plugin_basename( POWNED_FILE );
 		$code   = "<?php\n/**\n * Plugin Name: PoWned (early check)\n * Description: Runs the PoWned check before other plugins load. Managed by the PoWned plugin, removed when it is deactivated.\n */\n\ndefined( 'ABSPATH' ) || exit;\n\n"
 			. '$powned_core = WP_PLUGIN_DIR . ' . var_export( '/' . dirname( $plugin ) . '/includes/class-powned.php', true ) . ";\n"
-			. 'if ( is_readable( $powned_core ) && in_array( ' . var_export( $plugin, true ) . ", (array) get_option( 'active_plugins', array() ), true ) ) {\n"
-			. "\trequire_once \$powned_core;\n\tPowned::maybe_challenge();\n}\nunset( \$powned_core );\n";
+			. '$powned_active = in_array( ' . var_export( $plugin, true ) . ", (array) get_option( 'active_plugins', array() ), true );\n"
+			// Multisite: also when the plugin is network-activated.
+			. "if ( is_multisite() && ! \$powned_active ) {\n"
+			. "\t\$powned_sw     = (array) get_site_option( 'active_sitewide_plugins', array() );\n"
+			. "\t\$powned_active = isset( \$powned_sw[" . var_export( $plugin, true ) . "] );\n"
+			. "}\n"
+			. "if ( is_readable( \$powned_core ) && \$powned_active ) {\n"
+			. "\trequire_once \$powned_core;\n\tPowned::maybe_challenge();\n}\nunset( \$powned_core, \$powned_active, \$powned_sw );\n";
+		update_option( 'powned_loader_version', POWNED_VERSION, false );
 		return false !== @file_put_contents( self::path(), $code ); // phpcs:ignore
+	}
+
+	/**
+	 * After a plugin update: rewrite an installed loader if it was written by another version.
+	 */
+	public static function maybe_update() {
+		if ( self::installed() && POWNED_VERSION !== get_option( 'powned_loader_version' ) && ! empty( Powned::settings()['early'] ) ) {
+			self::install();
+		}
 	}
 
 	/**

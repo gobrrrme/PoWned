@@ -5,7 +5,7 @@ Tags: bots, crawler, proof of work, woocommerce, security
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.4.1
+Stable tag: 0.4.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -44,9 +44,30 @@ No list of gateways is needed. PoWned only checks actions a person performs in t
 
 = Does it set cookies? =
 
-One strictly necessary cookie, `powned`, with the solved block. It never contains the IP address.
+One strictly necessary cookie, `powned`, with the solved block: HttpOnly, SameSite=Lax, Secure on HTTPS, valid 24 hours by default. Right after solving, the block sits briefly in `powned_new` until the server takes it over. Neither contains the IP address.
+
+= Does it work behind Cloudflare or a reverse proxy? =
+
+PoWned reads PHP's REMOTE_ADDR. Behind a proxy every visitor shares that address, so one solved block unlocks the site for everyone. Pass the real client address with the powned_client_ip filter, or set "Bound to" to "Not bound". The settings page warns when it detects a proxy. Page caches and CDNs serve cached pages before PoWned runs: never cache the protected URLs.
+
+= Does it protect the REST API? =
+
+The Store API checkout and coupon routes, when those protected actions are on. Everything else under /wp-json/ is excluded by default, so product data stays reachable there without proof of work.
+
+= How strong is the proof of work, really? =
+
+18 bits are about 260,000 hashes: around a second in a browser, but milliseconds for a bot running native code. PoWned makes bulk requests expensive (every request pays, every network mines), it does not stop a targeted attacker with a GPU. Raise the base difficulty if your visitors can afford it.
 
 == Changelog ==
+
+= 0.4.2 =
+Contributions by mptfire, thank you:
+* "Go back" link on the challenge page: http(s) links to this site only.
+* Strict Content-Security-Policy header on the challenge page.
+* Early loader also works when the plugin is network-activated (multisite); it is rewritten automatically after updates.
+* Warnings on the settings page when a page cache or a reverse proxy can defeat the gate, dismissible per user.
+* With a persistent object cache, mined blocks are counted in the cache and written to the database once an hour: no database writes per block.
+* SECURITY.md and more FAQ.
 
 = 0.4.1 =
 * Neutral file names for scripts and styles (pw-core.js, pw-ui.js, pw-bg.js, pw.css): ad blockers with cryptominer lists blocked miner.js, so visitors with them could not get past the challenge page.

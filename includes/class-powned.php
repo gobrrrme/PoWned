@@ -14,7 +14,7 @@ if ( ! defined( 'POWNED_FILE' ) ) {
 	define( 'POWNED_FILE', dirname( __DIR__ ) . '/powned.php' );
 }
 if ( ! defined( 'POWNED_VERSION' ) ) {
-	define( 'POWNED_VERSION', '0.4.1' );
+	define( 'POWNED_VERSION', '0.4.2' );
 }
 
 /**
@@ -475,14 +475,38 @@ final class Powned {
 		} else {
 			set_transient( 'powned_' . $key, 1, 15 * MINUTE_IN_SECONDS );
 		}
-		global $wpdb;
-		$updated = $wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->options} SET option_value = option_value + 1 WHERE option_name = %s", self::BLOCKS_OPTION ) ); // phpcs:ignore WordPress.DB
-		if ( ! $updated ) {
-			add_option( self::BLOCKS_OPTION, 1, '', false );
+		$timed = $ms > 1 && $ms < 10 * MINUTE_IN_SECONDS * 1000;
+		// With a persistent object cache: count in the cache only, the hourly rollup writes the
+		// totals. A flood of solved blocks then causes no database writes at all.
+		if ( wp_using_ext_object_cache() ) {
+			self::count( 'blocks' );
+			if ( $timed ) {
+				self::count( 'timed' );
+				self::count( 'ms', $ms );
+			}
+			if ( false === wp_cache_incr( 'blocks_pending', 1, self::STATS_GROUP ) ) {
+				wp_cache_set( 'blocks_pending', 1, self::STATS_GROUP, 3 * DAY_IN_SECONDS );
+			}
+			wp_cache_set( 'last_block', time(), self::STATS_GROUP, 3 * DAY_IN_SECONDS );
+			return;
 		}
+		self::add_blocks( 1 );
 		update_option( self::LAST_BLOCK_OPTION, time(), false );
+		self::record_block( $timed ? $ms : 0 );
+	}
+
+	/**
+	 * Add to the total block counter in one query (CAST keeps it explicit under strict SQL modes).
+	 *
+	 * @param int $n Blocks.
+	 */
+	private static function add_blocks( $n ) {
+		global $wpdb;
+		$updated = $wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->options} SET option_value = CAST( option_value AS UNSIGNED ) + %d WHERE option_name = %s", $n, self::BLOCKS_OPTION ) ); // phpcs:ignore WordPress.DB
+		if ( ! $updated ) {
+			add_option( self::BLOCKS_OPTION, $n, '', false );
+		}
 		wp_cache_delete( self::BLOCKS_OPTION, 'options' );
-		self::record_block( max( 0, $ms ) );
 	}
 
 	/**
@@ -538,7 +562,7 @@ final class Powned {
 		$stats   = self::stats_raw();
 		$changed = false;
 		foreach ( array( gmdate( 'Ymd' ), gmdate( 'Ymd', time() - DAY_IN_SECONDS ) ) as $day ) {
-			foreach ( array( 'issued', 'passed' ) as $what ) {
+			foreach ( array( 'issued', 'passed', 'blocks', 'timed', 'ms' ) as $what ) {
 				$value = (int) wp_cache_get( $what . '_' . $day, self::STATS_GROUP );
 				if ( $value > (int) ( $stats[ $day ][ $what ] ?? 0 ) ) {
 					$stats[ $day ][ $what ] = $value;
@@ -548,6 +572,16 @@ final class Powned {
 		}
 		if ( $changed ) {
 			self::stats_save( $stats );
+		}
+		// Blocks counted in the cache since the last rollup: add them to the total.
+		$pending = (int) wp_cache_get( 'blocks_pending', self::STATS_GROUP );
+		if ( $pending > 0 ) {
+			wp_cache_decr( 'blocks_pending', $pending, self::STATS_GROUP );
+			self::add_blocks( $pending );
+		}
+		$last = (int) wp_cache_get( 'last_block', self::STATS_GROUP );
+		if ( $last > (int) get_option( self::LAST_BLOCK_OPTION, 0 ) ) {
+			update_option( self::LAST_BLOCK_OPTION, $last, false );
 		}
 	}
 
@@ -578,22 +612,27 @@ final class Powned {
 	 */
 	public static function blocks() {
 		global $wpdb;
-		return (int) $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", self::BLOCKS_OPTION ) ); // phpcs:ignore WordPress.DB
+		$total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", self::BLOCKS_OPTION ) ); // phpcs:ignore WordPress.DB
+		// Plus the blocks still waiting in the object cache for the hourly rollup.
+		if ( function_exists( 'wp_using_ext_object_cache' ) && wp_using_ext_object_cache() ) {
+			$total += max( 0, (int) wp_cache_get( 'blocks_pending', self::STATS_GROUP ) );
+		}
+		return $total;
 	}
 
 	/**
-	 * Count an event per day in a persistent object cache (Redis, Memcached). Without one,
+	 * Count an event per day (optionally by more than one) in a persistent object cache (Redis, Memcached). Without one,
 	 * nothing is stored: no database writes on every request.
 	 *
 	 * @param string $what issued|passed.
 	 */
-	public static function count( $what ) {
+	public static function count( $what, $by = 1 ) {
 		if ( ! function_exists( 'wp_using_ext_object_cache' ) || ! wp_using_ext_object_cache() ) {
 			return;
 		}
 		$key = $what . '_' . gmdate( 'Ymd' );
-		if ( false === wp_cache_incr( $key, 1, self::STATS_GROUP ) ) {
-			wp_cache_set( $key, 1, self::STATS_GROUP, 3 * DAY_IN_SECONDS );
+		if ( false === wp_cache_incr( $key, (int) $by, self::STATS_GROUP ) ) {
+			wp_cache_set( $key, (int) $by, self::STATS_GROUP, 3 * DAY_IN_SECONDS );
 		}
 	}
 
@@ -726,8 +765,12 @@ final class Powned {
 		$base   = plugins_url( 'assets/', POWNED_FILE );
 		$logo   = '' !== (string) $s['logo_url'] ? (string) $s['logo_url'] : ( function_exists( 'get_site_icon_url' ) ? get_site_icon_url( 96 ) : '' );
 		// "Go back" only to this site, never to a foreign referrer.
-		$back = isset( $_SERVER['HTTP_REFERER'] ) ? (string) $_SERVER['HTTP_REFERER'] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-		if ( wp_parse_url( $back, PHP_URL_HOST ) !== wp_parse_url( home_url(), PHP_URL_HOST ) ) {
+		$back       = isset( $_SERVER['HTTP_REFERER'] ) ? (string) $_SERVER['HTTP_REFERER'] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		$back_parts = wp_parse_url( $back );
+		// Same site AND http(s) only: a javascript: or data: URL whose host happens to match
+		// would otherwise land in the "Go back" link.
+		if ( '' === $back || ! is_array( $back_parts ) || ! isset( $back_parts['scheme'] ) || ! in_array( strtolower( $back_parts['scheme'] ), array( 'http', 'https' ), true )
+			|| ( $back_parts['host'] ?? null ) !== wp_parse_url( home_url(), PHP_URL_HOST ) ) {
 			$back = home_url( '/' );
 		}
 		$data = array(
@@ -752,6 +795,9 @@ final class Powned {
 			header( 'Content-Type: text/html; charset=utf-8' );
 			header( 'Cache-Control: no-store, max-age=0' );
 			header( 'X-Robots-Tag: noindex, nofollow' );
+			// The page is built for this: no inline script or style, everything same-origin
+			// except an optional https logo.
+			header( "Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; worker-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" );
 		}
 		include dirname( POWNED_FILE ) . '/templates/challenge.php';
 		exit;

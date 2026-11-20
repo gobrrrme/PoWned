@@ -3,7 +3,7 @@
  * Plugin Name:       PoWned
  * Plugin URI:        https://github.com/gobrrrme/PoWned
  * Description:       Protects expensive pages (by default WooCommerce filter URLs) with a small Bitcoin-style proof of work solved in the visitor's browser. Stops crawlers that hammer thousands of URL combinations from rotating IPs, without third-party services, tracking or CAPTCHAs. Difficulty adjusts to server load.
- * Version:           0.4.1
+ * Version:           0.4.2
  * Requires at least: 6.2
  * Requires PHP:      7.4
  * Author:            GoBrrr
@@ -19,7 +19,7 @@
 defined( 'ABSPATH' ) || exit;
 
 if ( ! defined( 'POWNED_VERSION' ) ) {
-	define( 'POWNED_VERSION', '0.4.1' );
+	define( 'POWNED_VERSION', '0.4.2' );
 }
 if ( ! defined( 'POWNED_FILE' ) ) {
 	define( 'POWNED_FILE', __FILE__ );
@@ -56,6 +56,7 @@ add_action(
 register_deactivation_hook( __FILE__, array( 'Powned_Loader', 'deactivate' ) );
 
 if ( is_admin() ) {
+	add_action( 'admin_init', array( 'Powned_Loader', 'maybe_update' ) );
 	require_once __DIR__ . '/includes/class-powned-settings.php';
 	Powned_Settings::init();
 }

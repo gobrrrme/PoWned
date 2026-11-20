@@ -185,7 +185,10 @@ final class Powned_Settings {
 	}
 
 	/**
-	 * Warn when early mode is on but the loader could not be written.
+	 * Warn when the setup defeats the gate: early loader not writable, a page cache in front of
+	 * WordPress, or a reverse proxy (private REMOTE_ADDR, or forwarded headers that differ from
+	 * it; those headers are only used to detect the proxy, never trusted). Every notice can be
+	 * dismissed per admin user. Thanks to mptfire.
 	 */
 	public static function notice_loader() {
 		$screen = get_current_screen();
@@ -195,8 +198,45 @@ final class Powned_Settings {
 		$s = Powned::settings();
 		if ( ! empty( $s['early'] ) && ! Powned_Loader::installed() && ! Powned_Loader::install() ) {
 			/* translators: %s: directory */
-			echo '<div class="notice notice-warning"><p>' . esc_html( sprintf( __( 'Early check is on, but the loader could not be written to %s. The check still runs, just a little later during loading.', 'powned' ), WPMU_PLUGIN_DIR ) ) . '</p></div>';
+			self::notice( 'loader', sprintf( __( 'Early check is on, but the loader could not be written to %s. The check still runs, just a little later during loading.', 'powned' ), WPMU_PLUGIN_DIR ), false );
 		}
+		if ( defined( 'WP_CACHE' ) && WP_CACHE ) {
+			self::notice( 'cache', __( 'A page cache is active (WP_CACHE). Cached pages are served before PoWned runs. Make sure your cache plugin never caches the protected URLs (for example URLs with query strings; LiteSpeed caches them by default).', 'powned' ) );
+		}
+		$ra = isset( $_SERVER['REMOTE_ADDR'] ) ? (string) $_SERVER['REMOTE_ADDR'] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		$ip = Powned::client_ip();
+		if ( 'none' !== $s['binding'] && '' !== $ip && false === filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE ) ) {
+			self::notice( 'proxy', __( 'PHP sees a private or reserved visitor address, which usually means a reverse proxy is in front. All visitors then share one network, and one solved block unlocks the site for everyone. Pass the real client address with the powned_client_ip filter (see the README), or set "Bound to" to "Not bound".', 'powned' ) );
+		}
+		$xff = isset( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ? trim( (string) strtok( (string) $_SERVER['HTTP_X_FORWARDED_FOR'], ',' ) ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		$cf  = isset( $_SERVER['HTTP_CF_CONNECTING_IP'] ) ? (string) $_SERVER['HTTP_CF_CONNECTING_IP'] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		if ( $ip === $ra && ( ( '' !== $xff && $xff !== $ra ) || ( '' !== $cf && $cf !== $ra ) ) ) {
+			self::notice( 'proxy_headers', __( 'Forwarded address headers (X-Forwarded-For, CF-Connecting-IP) differ from the visitor address: a reverse proxy or CDN is in front. All visitors then share the proxy\'s network. PoWned never trusts those headers on its own, they are easy to fake. Pass the real client address with the powned_client_ip filter (see the README), or set "Bound to" to "Not bound".', 'powned' ) );
+		}
+	}
+
+	/**
+	 * A warning notice, dismissible per admin user (nonce protected).
+	 *
+	 * @param string $key         Notice key.
+	 * @param string $message     Text.
+	 * @param bool   $dismissible Can it be dismissed?
+	 */
+	private static function notice( $key, $message, $dismissible = true ) {
+		$user = get_current_user_id();
+		if ( $dismissible && isset( $_GET['powned_dismiss'], $_GET['_wpnonce'] ) && sanitize_key( (string) $_GET['powned_dismiss'] ) === $key // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+			&& wp_verify_nonce( sanitize_text_field( (string) $_GET['_wpnonce'] ), 'powned_dismiss_' . $key ) ) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+			update_user_meta( $user, 'powned_dismissed_' . $key, time() );
+		}
+		if ( $dismissible && get_user_meta( $user, 'powned_dismissed_' . $key, true ) ) {
+			return;
+		}
+		echo '<div class="notice notice-warning"><p>' . esc_html( $message ) . '</p>';
+		if ( $dismissible ) {
+			$url = wp_nonce_url( add_query_arg( 'powned_dismiss', $key, admin_url( 'admin.php?page=powned' ) ), 'powned_dismiss_' . $key );
+			echo '<p><a href="' . esc_url( $url ) . '">' . esc_html__( 'Dismiss this notice', 'powned' ) . '</a></p>';
+		}
+		echo '</div>';
 	}
 
 	/**

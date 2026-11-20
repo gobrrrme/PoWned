@@ -104,7 +104,7 @@ Tuning: 18 bits is about 260,000 hashes on average, well under a second on curre
 
 ## Security notes
 
-Thanks to [VirtusVerbis](https://github.com/gobrrrme/PoWned/issues/6) for the review.
+Thanks to [VirtusVerbis](https://github.com/gobrrrme/PoWned/issues/6) for the review and to [mptfire](https://github.com/mptfire) for the fixes in 0.4.2 (CSP on the challenge page, back link, multisite loader, proxy and cache warnings, write-free block counting). Found something? See [SECURITY.md](SECURITY.md).
 
 - **Friction, not authentication.** Anyone who solves the proof of work can see the protected pages. PoWned makes bulk requests expensive, it does not decide who is allowed in.
 - **Reverse proxy.** The block is bound to `REMOTE_ADDR`. If your own nginx, Apache or haproxy sits in front of WordPress, PoWned sees the proxy address, all visitors share one network and one solved block works for everyone. Return the real client address with the `powned_client_ip` filter, from a mu-plugin that loads before `powned-early.php` (for example `mu-plugins/00-powned-proxy.php`). Only read a forwarded header there if your proxy always sets it; without a proxy in front, anyone can send one.
@@ -119,6 +119,8 @@ Thanks to [VirtusVerbis](https://github.com/gobrrrme/PoWned/issues/6) for the re
 - **Cookies.** The browser stores a freshly solved block in `powned_new`. On the next request the server takes it over as `powned`, an HttpOnly cookie that scripts on the page cannot read, and deletes `powned_new`. A stolen block only works from the same network (/24 or /64) until it expires.
 - **Status codes.** The challenge page is sent with 403 by default, so caches and crawlers do not store it as content. 429 and 503 also work; the lockdown always uses 503 with `Retry-After`. 200 is possible but not recommended: some caches and crawlers would keep the challenge page as if it were your page.
 - **Ad blockers.** Scripts and styles have neutral names (`pw-core.js`, `pw-ui.js`, `pw-bg.js`, `pw.css`). Cryptominer filter lists block files called `miner.js`. Security tools that watch CPU usage might still flag mining in rare cases.
+- **Content-Security-Policy.** The challenge page sends its own strict CSP: scripts, styles and workers from your site only, no inline code, no outgoing connections.
+- **Database writes.** With a persistent object cache (Redis, Memcached), solved blocks are counted in the cache and written to the database once an hour, so a flood of solved blocks causes no database writes.
 - **Smaller points.** The signature is 64 bits of HMAC-SHA256 and can only be guessed online, one request per try. HEAD requests get no body. Texts from the `powned_strings` filter are escaped on output.
 
 ## Requirements
