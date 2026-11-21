@@ -14,7 +14,7 @@ if ( ! defined( 'POWNED_FILE' ) ) {
 	define( 'POWNED_FILE', dirname( __DIR__ ) . '/powned.php' );
 }
 if ( ! defined( 'POWNED_VERSION' ) ) {
-	define( 'POWNED_VERSION', '0.4.2' );
+	define( 'POWNED_VERSION', '0.4.3' );
 }
 
 /**
@@ -747,6 +747,53 @@ final class Powned {
 	}
 
 	/**
+	 * Content-Security-Policy of the challenge page: no inline script or style, nothing loaded
+	 * from elsewhere. Plugin assets on another origin (CDN or static domain) and a logo from
+	 * another origin are added automatically. Filter: powned_csp (array of directives).
+	 *
+	 * @param string $base Asset URL.
+	 * @param string $logo Logo URL.
+	 */
+	public static function challenge_csp( $base, $logo ) {
+		$origin = static function ( $url ) {
+			$p = wp_parse_url( (string) $url );
+			if ( ! is_array( $p ) || empty( $p['host'] ) || ! in_array( strtolower( $p['scheme'] ?? '' ), array( 'http', 'https' ), true ) ) {
+				return '';
+			}
+			return strtolower( $p['scheme'] ) . '://' . strtolower( $p['host'] ) . ( isset( $p['port'] ) ? ':' . (int) $p['port'] : '' );
+		};
+		$self   = $origin( home_url( '/' ) );
+		$assets = $origin( $base );
+		$extra  = ( '' !== $assets && $assets !== $self ) ? ' ' . $assets : '';
+		$img    = "'self' https: data:";
+		$logo_o = $origin( $logo );
+		if ( '' !== $logo_o && $logo_o !== $self && 0 === strpos( $logo_o, 'http:' ) ) {
+			$img .= ' ' . $logo_o;
+		}
+		$csp = array(
+			'default-src'     => "'none'",
+			'script-src'      => "'self'" . $extra,
+			'style-src'       => "'self'" . $extra,
+			'img-src'         => $img,
+			// Browsers only start workers from the page's own origin; with assets on a CDN the
+			// miner falls back to mining on the page.
+			'worker-src'      => "'self'" . $extra,
+			'connect-src'     => "'none'",
+			'base-uri'        => "'none'",
+			'form-action'     => "'none'",
+			'frame-ancestors' => "'none'",
+		);
+		if ( function_exists( 'apply_filters' ) ) {
+			$csp = (array) apply_filters( 'powned_csp', $csp, $base, $logo );
+		}
+		$out = array();
+		foreach ( $csp as $directive => $value ) {
+			$out[] = trim( $directive . ' ' . $value );
+		}
+		return implode( '; ', $out );
+	}
+
+	/**
 	 * Send the challenge page and stop.
 	 *
 	 * @param bool     $preview Admin preview (status 200, nothing counted).
@@ -795,9 +842,7 @@ final class Powned {
 			header( 'Content-Type: text/html; charset=utf-8' );
 			header( 'Cache-Control: no-store, max-age=0' );
 			header( 'X-Robots-Tag: noindex, nofollow' );
-			// The page is built for this: no inline script or style, everything same-origin
-			// except an optional https logo.
-			header( "Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; worker-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" );
+			header( 'Content-Security-Policy: ' . self::challenge_csp( $base, $logo ) );
 		}
 		include dirname( POWNED_FILE ) . '/templates/challenge.php';
 		exit;

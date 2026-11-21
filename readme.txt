@@ -5,7 +5,7 @@ Tags: bots, crawler, proof of work, woocommerce, security
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.4.2
+Stable tag: 0.4.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -59,6 +59,9 @@ The Store API checkout and coupon routes, when those protected actions are on. E
 18 bits are about 260,000 hashes: around a second in a browser, but milliseconds for a bot running native code. PoWned makes bulk requests expensive (every request pays, every network mines), it does not stop a targeted attacker with a GPU. Raise the base difficulty if your visitors can afford it.
 
 == Changelog ==
+
+= 0.4.3 =
+* Challenge page CSP: plugin assets served from another origin (CDN, static domain) and a logo from another origin over http are allowed automatically, so the challenge stays solvable there. New filter powned_csp. Thanks to mptfire for pointing it out.
 
 = 0.4.2 =
 Contributions by mptfire, thank you:
