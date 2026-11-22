@@ -13,6 +13,10 @@ delete_option( 'powned_blocks' );
 delete_option( 'powned_last_block' );
 delete_option( 'powned_stats' );
 delete_option( 'powned_loader_version' );
+global $wpdb;
+foreach ( array( 'powned_used_', 'powned_rate_' ) as $powned_prefix ) {
+	$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s", $wpdb->esc_like( $powned_prefix ) . '%' ) ); // phpcs:ignore WordPress.DB
+}
 delete_metadata( 'user', 0, 'powned_dismissed_cache', '', true );
 delete_metadata( 'user', 0, 'powned_dismissed_proxy', '', true );
 delete_metadata( 'user', 0, 'powned_dismissed_proxy_headers', '', true );

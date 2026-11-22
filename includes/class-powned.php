@@ -14,8 +14,9 @@ if ( ! defined( 'POWNED_FILE' ) ) {
 	define( 'POWNED_FILE', dirname( __DIR__ ) . '/powned.php' );
 }
 if ( ! defined( 'POWNED_VERSION' ) ) {
-	define( 'POWNED_VERSION', '0.4.3' );
+	define( 'POWNED_VERSION', '0.5.0' );
 }
+require_once __DIR__ . '/class-powned-tickets.php';
 
 /**
  * Proof-of-work gate.
@@ -46,6 +47,9 @@ final class Powned {
 			'guard_coupon'   => 0,
 			'guard_login'    => 0,
 			'guard_forms'    => 0,
+			'guard_reset'    => 0,
+			'action_extra'   => 2,
+			'action_limit'   => 10,
 			'stealth'        => 0,
 			'lockdown'       => 'off',
 			'lockdown_hours' => 6,
@@ -184,10 +188,15 @@ final class Powned {
 	 */
 	public static function guard_checkout_submit() {
 		$s = self::settings();
-		if ( empty( $s['enabled'] ) || empty( $s['checkout'] ) || Powned_Actions::passes() ) {
+		if ( empty( $s['enabled'] ) || empty( $s['checkout'] ) ) {
 			return;
 		}
-		wc_add_notice( '<span class="powned-retry"></span>' . esc_html( self::strings( Powned_Actions::language() )['checkout'] ), 'error' );
+		// Only looked at here, so a typo does not cost a block. Spent when the order is created.
+		Powned_Actions::$in_checkout = true;
+		$why = Powned_Actions::check( 'order' );
+		if ( '' !== $why ) {
+			wc_add_notice( Powned_Actions::checkout_message( $why ), 'error' );
+		}
 	}
 
 	/**
@@ -201,17 +210,27 @@ final class Powned {
 	 */
 	public static function guard_store_api( $result, $server, $request ) {
 		// All methods: a GET on the checkout route already creates a draft order.
-		$s     = self::settings();
-		if ( empty( $s['enabled'] ) ) {
+		$s = self::settings();
+		if ( empty( $s['enabled'] ) || is_wp_error( $result ) ) {
 			return $result;
 		}
-		$route = (string) $request->get_route();
-		$hit   = ( ! empty( $s['checkout'] ) && preg_match( '#^/wc/store(/v\d+)?/(checkout|batch)(/|$)#', $route ) )
-			|| ( ! empty( $s['guard_coupon'] ) && preg_match( '#^/wc/store(/v\d+)?/cart/apply-coupon(/|$)#', $route ) );
-		if ( ! $hit || Powned_Actions::passes() ) {
+		// Routes match case-insensitively in WordPress, so here too.
+		$route = strtolower( (string) $request->get_route() );
+		$post  = 'POST' === strtoupper( (string) $request->get_method() );
+		if ( ! empty( $s['checkout'] ) && preg_match( '#^/wc/store(/v\d+)?/checkout(/|$)#', $route ) ) {
+			// POST places the order and spends the block; drafts and field updates only need one.
+			$why = $post ? Powned_Actions::spend( 'order' ) : Powned_Actions::check( 'order' );
+		} elseif ( ! empty( $s['checkout'] ) && preg_match( '#^/wc/store(/v\d+)?/batch(/|$)#', $route ) ) {
+			$why = Powned_Actions::check( 'order' ); // Each request inside comes through here again.
+		} elseif ( $post && ! empty( $s['guard_coupon'] ) && preg_match( '#^/wc/store(/v\d+)?/cart/(apply-coupon|coupons)(/|$)#', $route ) ) {
+			$why = Powned_Actions::spend( 'coupon' );
+		} else {
 			return $result;
 		}
-		return new WP_Error( 'powned_required', self::strings( Powned_Actions::language() )['action'], array( 'status' => 403 ) );
+		if ( '' === $why ) {
+			return $result;
+		}
+		return new WP_Error( 'powned_required', Powned_Actions::message( $why ), array( 'status' => 'limit' === $why ? 429 : 403 ) );
 	}
 
 	/**
@@ -269,9 +288,17 @@ final class Powned {
 		} elseif ( 'ip' === $binding ) {
 			$net = bin2hex( $bin );
 		} else {
-			$net = bin2hex( substr( $bin, 0, 4 === strlen( $bin ) ? 3 : 8 ) );
+			$net = self::network();
 		}
 		return substr( hash_hmac( 'sha256', 'client|' . $binding . '|' . $net, self::secret() ), 0, 12 );
+	}
+
+	/**
+	 * Network of the visitor: /24 for IPv4, /64 for IPv6.
+	 */
+	public static function network() {
+		$bin = @inet_pton( self::client_ip() ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		return false === $bin ? 'any' : bin2hex( substr( $bin, 0, 4 === strlen( $bin ) ? 3 : 8 ) );
 	}
 
 	/**
@@ -416,30 +443,56 @@ final class Powned {
 				return $block;
 			}
 		}
-		$raw = isset( $_COOKIE[ self::COOKIE ] ) ? (string) $_COOKIE[ self::COOKIE ] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-		return self::check_block( $raw );
+		$raw   = isset( $_COOKIE[ self::COOKIE ] ) ? (string) $_COOKIE[ self::COOKIE ] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		$block = self::check_block( $raw );
+		if ( $block || empty( $_COOKIE[ Powned_Tickets::COOKIE ] ) ) {
+			return $block;
+		}
+		// Whoever mined an action block (cart, product page) may browse with it: no second
+		// challenge when the checkout opens. This does not spend it.
+		$raw   = explode( '_', (string) $_COOKIE[ Powned_Tickets::COOKIE ], 2 )[0]; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		$block = self::check_block( $raw );
+		if ( $block ) {
+			$_COOKIE[ self::COOKIE ] = $raw;
+			if ( ! headers_sent() ) {
+				setcookie(
+					self::COOKIE,
+					$raw,
+					array(
+						'expires'  => $block['expiry'],
+						'path'     => '/',
+						'secure'   => function_exists( 'is_ssl' ) && is_ssl(),
+						'httponly' => true,
+						'samesite' => 'Lax',
+					)
+				);
+			}
+		}
+		return $block;
 	}
 
 	/**
-	 * Check a solved block. Format: 1.<expiry>.<client>.<bits>.<salt>.<nonce>.<mac>
+	 * Check a solved block. Format: <version>.<expiry>.<client>.<bits>.<salt>.<nonce>.<mac>
+	 * Version 1 is a browsing block, version 2 an action block. The signature covers the version.
 	 *
 	 * @param string $raw Block.
-	 * @return array{expiry:int,salt:string}|null
+	 * @return array{expiry:int,salt:string,version:int,bits:int,solved:int}|null
 	 */
 	public static function check_block( $raw ) {
-		if ( ! preg_match( '/^1\.(\d{10})\.([0-9a-f]{12})\.(\d{1,2})\.([0-9a-f]{12})\.(\d{1,12})\.([0-9a-f]{16})$/', $raw, $m ) ) {
+		if ( ! preg_match( '/^([12])\.(\d{10})\.([0-9a-f]{12})\.(\d{1,2})\.([0-9a-f]{12})\.(\d{1,12})\.([0-9a-f]{16})$/', $raw, $m ) ) {
 			return null;
 		}
-		list( , $expiry, $client, $bits, $salt, $nonce, $mac ) = $m;
+		list( , $version, $expiry, $client, $bits, $salt, $nonce, $mac ) = $m;
 		$s   = self::settings();
 		$now = time();
-		if ( (int) $expiry < $now || (int) $expiry > $now + (int) $s['ttl_hours'] * HOUR_IN_SECONDS + 600 || (int) $bits < (int) $s['base_bits'] ) {
+		$ttl = '2' === $version ? Powned_Tickets::TTL : max( 1, (int) $s['ttl_hours'] ) * HOUR_IN_SECONDS;
+		if ( (int) $expiry < $now || (int) $expiry > $now + $ttl + 600 || (int) $bits < (int) $s['base_bits'] ) {
 			return null;
 		}
 		if ( ! hash_equals( self::client_key(), $client ) ) {
 			return null;
 		}
-		$challenge = "1.$expiry.$client.$bits.$salt.";
+		$challenge = "$version.$expiry.$client.$bits.$salt.";
 		if ( ! hash_equals( self::mac( $challenge ), $mac ) ) {
 			return null;
 		}
@@ -447,8 +500,11 @@ final class Powned {
 			return null;
 		}
 		return array(
-			'expiry' => (int) $expiry,
-			'salt'   => $salt,
+			'expiry'  => (int) $expiry,
+			'salt'    => $salt,
+			'version' => (int) $version,
+			'bits'    => (int) $bits,
+			'solved'  => (int) $expiry - $ttl,
 		);
 	}
 
@@ -461,8 +517,9 @@ final class Powned {
 	 * @param int                           $ms    Mining time measured by the browser.
 	 */
 	public static function count_block( $block, $ms ) {
-		$solved = $block['expiry'] - (int) self::settings()['ttl_hours'] * HOUR_IN_SECONDS;
-		if ( $solved < time() - 15 * MINUTE_IN_SECONDS ) {
+		// Action blocks are counted when they are spent, up to their whole lifetime later.
+		$fresh = 2 === $block['version'] ? Powned_Tickets::TTL : 15 * MINUTE_IN_SECONDS;
+		if ( $block['solved'] < time() - $fresh ) {
 			return;
 		}
 		$key = 'block_' . $block['salt'];
@@ -556,6 +613,7 @@ final class Powned {
 	 * Values only ever go up, so an evicted cache key cannot erase a day.
 	 */
 	public static function rollup() {
+		Powned_Tickets::cleanup();
 		if ( ! function_exists( 'wp_using_ext_object_cache' ) || ! wp_using_ext_object_cache() ) {
 			return;
 		}
@@ -678,6 +736,7 @@ final class Powned {
 				'checkout' => 'The anti-bot check for this order had expired and is being renewed. If the order is not placed automatically in a few seconds, please place it again.',
 				'action'   => 'The anti-bot check is missing or has expired. Please reload the page and try again (JavaScript needed).',
 				'loading'  => 'Loading …',
+				'limit'    => 'Too many attempts from your network in the last hour. Please try again later.',
 			),
 			'de' => array(
 				'title'   => 'Angefragte Seite wird gemined',
@@ -697,6 +756,7 @@ final class Powned {
 				'checkout' => 'Die Prüfung gegen Bots für diese Bestellung war abgelaufen und wird erneuert. Falls die Bestellung nicht in ein paar Sekunden automatisch abgeschickt wird, schicke sie bitte noch einmal ab.',
 				'action'   => 'Die Prüfung gegen Bots fehlt oder ist abgelaufen. Bitte lade die Seite neu und versuche es noch einmal (JavaScript nötig).',
 				'loading'  => 'Wird geladen …',
+				'limit'    => 'Zu viele Versuche aus deinem Netz in der letzten Stunde. Bitte versuche es später noch einmal.',
 			),
 		);
 		$t = $all[ $lang ] ?? $all['en'];
@@ -722,24 +782,33 @@ final class Powned {
 			header( 'Cache-Control: no-store, max-age=0' );
 			header( 'X-Robots-Tag: noindex, nofollow' );
 		}
-		// Already holding a valid block (HttpOnly, so the page cannot see it): nothing to mine.
-		if ( empty( $_GET['fresh'] ) && self::valid_cookie() ) { // phpcs:ignore WordPress.Security.NonceVerification
-			echo '{"valid":true}';
-			exit;
+		$action = ! empty( $_GET['action'] ); // phpcs:ignore WordPress.Security.NonceVerification
+		$fresh  = ! empty( $_GET['fresh'] ); // phpcs:ignore WordPress.Security.NonceVerification
+		if ( $action ) {
+			$have = $fresh ? null : Powned_Tickets::current();
+			// Nearly expired ones are replaced, so they last until the form is sent.
+			if ( $have && $have['expiry'] > time() + 180 ) {
+				echo wp_json_encode( array( 'valid' => true, 'left' => $have['expiry'] - time() ) ); // phpcs:ignore WordPress.Security.EscapeOutput
+				exit;
+			}
+			$c   = Powned_Tickets::challenge();
+			$ttl = Powned_Tickets::TTL;
+		} else {
+			// Already holding a valid block (HttpOnly, so the page cannot see it): nothing to mine.
+			if ( ! $fresh && self::valid_cookie() ) {
+				echo '{"valid":true}';
+				exit;
+			}
+			$c   = self::new_challenge();
+			$ttl = (int) self::settings()['ttl_hours'] * HOUR_IN_SECONDS;
 		}
-		$c = self::new_challenge();
 		self::count( 'issued' );
-		if ( ! headers_sent() ) {
-			header( 'Content-Type: application/json; charset=utf-8' );
-			header( 'Cache-Control: no-store, max-age=0' );
-			header( 'X-Robots-Tag: noindex, nofollow' );
-		}
 		echo wp_json_encode( // phpcs:ignore WordPress.Security.EscapeOutput
 			array(
 				'challenge' => $c['challenge'],
 				'mac'       => $c['mac'],
 				'bits'      => $c['bits'],
-				'ttl'       => (int) self::settings()['ttl_hours'] * HOUR_IN_SECONDS,
+				'ttl'       => $ttl,
 				'secure'    => is_ssl(),
 			)
 		);

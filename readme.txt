@@ -5,7 +5,7 @@ Tags: bots, crawler, proof of work, woocommerce, security
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.4.3
+Stable tag: 0.5.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -44,7 +44,7 @@ No list of gateways is needed. PoWned only checks actions a person performs in t
 
 = Does it set cookies? =
 
-One strictly necessary cookie, `powned`, with the solved block: HttpOnly, SameSite=Lax, Secure on HTTPS, valid 24 hours by default. Right after solving, the block sits briefly in `powned_new` until the server takes it over. Neither contains the IP address.
+Strictly necessary ones only. A protected action (order, form, login, ...) uses `powned_action`: a single-use block, valid for 30 minutes. For browsing there is `powned`, with the solved block: HttpOnly, SameSite=Lax, Secure on HTTPS, valid 24 hours by default. Right after solving, the block sits briefly in `powned_new` until the server takes it over. Neither contains the IP address.
 
 = Does it work behind Cloudflare or a reverse proxy? =
 
@@ -52,13 +52,26 @@ PoWned reads PHP's REMOTE_ADDR. Behind a proxy every visitor shares that address
 
 = Does it protect the REST API? =
 
-The Store API checkout and coupon routes, when those protected actions are on. Everything else under /wp-json/ is excluded by default, so product data stays reachable there without proof of work.
+The Store API checkout and coupon routes, when those protected actions are on (in any upper or lower case spelling). Everything else under /wp-json/ is excluded by default, so product data stays reachable there without proof of work.
 
 = How strong is the proof of work, really? =
 
 18 bits are about 260,000 hashes: around a second in a browser, but milliseconds for a bot running native code. PoWned makes bulk requests expensive (every request pays, every network mines), it does not stop a targeted attacker with a GPU. Raise the base difficulty if your visitors can afford it.
 
 == Changelog ==
+
+= 0.5.0 =
+Security release, please update. After updating, clear your page cache.
+
+* Security: REST route checks ignore upper and lower case, like WordPress. Up to 0.4.3 the Store API checkout protection could be bypassed with a differently cased route.
+* Security: the login protection now also sees WooCommerce logins that send their nonce as _wpnonce.
+* Security: the coupon protection also covers admin-ajax and the Store API route cart/coupons. Coupon links (WooCommerce checkout links, URL coupons of other plugins) stay open.
+* Security: orders that WooCommerce PayPal Payments creates from an express approval also spend a block.
+* Each protected action spends a block of its own (30 minutes, works once). Up to 0.4.3 one block allowed any number of actions for 24 hours.
+* Action blocks are harder (2 extra bits by default) and limited per network and hour (10 by default).
+* New: password reset requests and the "Pay for order" page are protected.
+* Background miner: mines the next block after one is spent, falls back to the page when workers are unavailable, gives up after 2 minutes.
+* New cookie powned_action (30 minutes).
 
 = 0.4.3 =
 * Challenge page CSP: plugin assets served from another origin (CDN, static domain) and a logo from another origin over http are allowed automatically, so the challenge stays solvable there. New filter powned_csp. Thanks to mptfire for pointing it out.

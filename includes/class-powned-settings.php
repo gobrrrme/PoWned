@@ -86,6 +86,9 @@ final class Powned_Settings {
 			'guard_coupon'   => empty( $in['guard_coupon'] ) ? 0 : 1,
 			'guard_login'    => empty( $in['guard_login'] ) ? 0 : 1,
 			'guard_forms'    => empty( $in['guard_forms'] ) ? 0 : 1,
+			'guard_reset'    => empty( $in['guard_reset'] ) ? 0 : 1,
+			'action_extra'   => max( 0, min( 6, (int) ( $in['action_extra'] ?? $d['action_extra'] ) ) ),
+			'action_limit'   => max( 0, min( 1000, (int) ( $in['action_limit'] ?? $d['action_limit'] ) ) ),
 			'stealth'        => empty( $in['stealth'] ) ? 0 : 1,
 			'lockdown'       => in_array( $in['lockdown'] ?? '', array( 'off', 'log', 'on', 'auto' ), true ) ? $in['lockdown'] : 'off',
 			'lockdown_hours' => max( 0, min( 168, (int) ( $in['lockdown_hours'] ?? $d['lockdown_hours'] ) ) ),
@@ -423,9 +426,10 @@ final class Powned_Settings {
 							<label><input type="checkbox" name="<?php echo $name( 'checkout' ); // phpcs:ignore ?>" value="1" <?php checked( $s['checkout'] ); ?>> <?php esc_html_e( 'Checkout and express payment buttons', 'powned' ); ?></label><br>
 							<label><input type="checkbox" name="<?php echo $name( 'guard_coupon' ); // phpcs:ignore ?>" value="1" <?php checked( $s['guard_coupon'] ); ?>> <?php esc_html_e( 'Coupon codes', 'powned' ); ?></label><br>
 							<label><input type="checkbox" name="<?php echo $name( 'guard_login' ); // phpcs:ignore ?>" value="1" <?php checked( $s['guard_login'] ); ?>> <?php esc_html_e( 'Login forms (wp-login.php and the WooCommerce account page)', 'powned' ); ?></label><br>
+							<label><input type="checkbox" name="<?php echo $name( 'guard_reset' ); // phpcs:ignore ?>" value="1" <?php checked( $s['guard_reset'] ); ?>> <?php esc_html_e( 'Password reset requests', 'powned' ); ?></label><br>
 							<label><input type="checkbox" name="<?php echo $name( 'guard_forms' ); // phpcs:ignore ?>" value="1" <?php checked( $s['guard_forms'] ); ?>> <?php esc_html_e( 'Contact Form 7 and comments', 'powned' ); ?></label>
 						</fieldset>
-						<p class="description"><?php esc_html_e( 'These actions are only accepted with a solved block. On the pages where they happen (cart, checkout, product pages, login, forms) the browser mines in the background, and forms wait the moment it takes. No challenge page, no puzzle. Visitors without JavaScript cannot use protected actions. Logged-in users always pass. Payment webhooks and gateway callbacks are never checked, whatever the payment provider.', 'powned' ); ?></p>
+						<p class="description"><?php esc_html_e( 'Each of these actions spends a block of its own. On the pages where they happen (cart, checkout, product pages, login, forms) the browser mines in the background, and forms wait the moment it takes. No challenge page, no puzzle. Visitors without JavaScript cannot use protected actions. Logged-in users always pass. Payment webhooks and gateway callbacks are never checked, whatever the payment provider.', 'powned' ); ?></p>
 						<p class="description"><?php esc_html_e( 'Checkout also shows the challenge page when someone opens the checkout without a block.', 'powned' ); ?></p></td></tr>
 					<tr><th scope="row"><?php esc_html_e( 'Stealth mode', 'powned' ); ?></th>
 						<td><label><input type="checkbox" name="<?php echo $name( 'stealth' ); // phpcs:ignore ?>" value="1" <?php checked( $s['stealth'] ); ?>> <?php esc_html_e( 'Challenge page shows only a small spinner instead of the block', 'powned' ); ?></label>
@@ -433,6 +437,16 @@ final class Powned_Settings {
 					<tr><th scope="row"><?php esc_html_e( 'Early check', 'powned' ); ?></th>
 						<td><label><input type="checkbox" name="<?php echo $name( 'early' ); // phpcs:ignore ?>" value="1" <?php checked( $s['early'] ); ?>> <?php esc_html_e( 'Run the check before other plugins load (adds a small file to mu-plugins)', 'powned' ); ?></label>
 						<p class="description"><?php esc_html_e( 'Recommended: a crawler request then costs almost no server time.', 'powned' ); ?></p></td></tr>
+				</table>
+
+				<h2><?php esc_html_e( 'Cost of an action', 'powned' ); ?></h2>
+				<table class="form-table" role="presentation">
+					<tr><th scope="row"><label for="pg-action-extra"><?php esc_html_e( 'Extra difficulty', 'powned' ); ?></label></th>
+						<td><input id="pg-action-extra" type="number" min="0" max="6" class="small-text" name="<?php echo $name( 'action_extra' ); // phpcs:ignore ?>" value="<?php echo (int) $s['action_extra']; ?>"> <?php esc_html_e( 'bits on top of the base difficulty', 'powned' ); ?>
+						<p class="description"><?php esc_html_e( 'Each protected action spends a block of its own, mined in the background. Server load does not raise its difficulty. Each bit doubles the work.', 'powned' ); ?></p></td></tr>
+					<tr><th scope="row"><label for="pg-action-limit"><?php esc_html_e( 'Limit per network', 'powned' ); ?></label></th>
+						<td><input id="pg-action-limit" type="number" min="0" max="1000" class="small-text" name="<?php echo $name( 'action_limit' ); // phpcs:ignore ?>" value="<?php echo (int) $s['action_limit']; ?>"> <?php esc_html_e( 'per hour and kind of action (0 = no limit)', 'powned' ); ?>
+						<p class="description"><?php esc_html_e( 'Counted per network (/24, /64) for orders, coupons, logins, password resets and forms separately. Only a keyed hash is stored, for up to two hours. Mobile providers and large offices share networks: do not set it too low.', 'powned' ); ?></p></td></tr>
 				</table>
 
 				<h2 id="powned-lockdown"><?php esc_html_e( 'Full lockdown', 'powned' ); ?></h2>

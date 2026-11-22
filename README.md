@@ -1,6 +1,6 @@
 # Bots get PoWned
 
-**PoWned** is a WordPress plugin that makes crawlers pay for what they take. Before a bot gets your expensive pages, it has to mine a block: double SHA-256 below a target, exactly like Bitcoin, just with a difficulty a phone solves in a blink. Humans wait about a second, once. Bots that hammer you from 10,000 rotating IPs pay that on every single request.
+**PoWned** is a WordPress plugin that makes crawlers pay for what they take. Before a bot gets your expensive pages, it has to mine a block: double SHA-256 below a target, exactly like Bitcoin, just with a difficulty a phone solves in a blink. Humans wait about a second, once. Bots that hammer you from 10,000 rotating IPs pay again for every new network.
 
 GG WP
 
@@ -28,7 +28,7 @@ What works: make every request cost CPU time. Proof of work. The thing Bitcoin h
 - **Multi-core mining.** One Web Worker per CPU core (up to 4), with a fallback for browsers without workers.
 - **No third parties.** No CAPTCHAs, no external scripts, no fonts from elsewhere, no tracking. Runs under a strict Content-Security-Policy (no inline scripts or styles; needs `worker-src 'self'`).
 - **Block counter.** The settings page shows how many blocks have been mined on your site. Every solved challenge counts once, and the visitor sees which block they are mining: *Block #1,337*.
-- **Protected actions (optional).** Orders, coupon codes, logins, Contact Form 7 and comments are only accepted with a solved block. The browser mines it in the background on the pages where these actions happen, so humans never see a challenge page or a puzzle. Forms that are sent before the block is ready wait the fraction of a second it takes, then go out on their own. Details below.
+- **Protected actions (optional).** Orders, coupon codes, logins, password reset requests, Contact Form 7 and comments each spend a block of their own: harder than a browsing block, valid 30 minutes, works once, and limited per network and hour. The browser mines it in the background on the pages where these actions happen, so humans never see a challenge page or a puzzle. Forms that are sent before the block is ready wait the fraction of a second it takes, then go out on their own. Details below.
 - **Stealth mode (optional).** The challenge page shows a small spinner instead of the block, and only after 0.6 seconds. A quick solve looks like a normal page load.
 - **Full lockdown (optional, for emergencies).** Every page view needs a solved block. Manual with an automatic switch-off, or automatic under heavy load. Read the warnings below before you use it.
 - **30-day stats.** Blocks mined, average mining time, challenges shown, requests let through and the solve rate, with a small chart per day. Only daily totals are stored, nothing per visitor. Challenge counts ride on your object cache (Redis, Memcached) and are rolled up hourly, so a bot flood never turns into database writes.
@@ -62,6 +62,14 @@ Switch them on one by one under *Protected actions*:
 | Coupon codes | Refused before WooCommerce looks the code up, so guessing codes gets expensive | Cart and checkout |
 | Login forms | `wp-login.php` and the WooCommerce account form. Without a block the password is not even checked, so bots cannot make your server compute password hashes. XML-RPC and application passwords are left alone. | Login page, account page, when someone starts typing |
 | Contact Form 7, comments | A submission without a block counts as spam | Pages with a form, when someone starts using it |
+
+Every action spends its own block. Placing a second order or sending a second form needs a second one; the browser mines it in the background. A typo at the checkout costs nothing, because the block is only spent when the order is created. Password reset requests and the "Pay for order" page are covered too. By default a network (/24 or /64) gets 10 actions of each kind per hour.
+
+**Not covered:** coupons applied through links (WooCommerce checkout links, URL coupons of affiliate plugins), because those links are meant to work without any action. Logged-in users pass, so think twice if anyone can register on your site.
+
+**Updating to 0.5:** clear your page cache, so pages load the new miner.
+
+**Be realistic:** an action block (20 bits by default) takes seconds in a browser and far less in native code. It stops scripts that replay requests and makes bulk abuse expensive, but someone willing to mine can still act, up to the limit per network.
 
 If a block expires during checkout (or the customer switches from Wi-Fi to mobile data), the order is refused once, the browser mines a new block and places the order again by itself.
 
@@ -131,6 +139,8 @@ WordPress 6.2+, PHP 7.4+. The load-based difficulty reads `/proc/cpuinfo` and `s
 
 The cookie is strictly necessary for the security of the site and contains no personal data in clear text. Put a line in your privacy policy, for example:
 
+> For an order, a form or another protected action, the result is kept for up to 30 minutes in the cookie `powned_action` and can be used once; to limit abuse, a keyed hash of your network is counted for up to two hours.
+>
 > When you use the shop filters, the checkout or a form, your browser solves a small computing task and stores the result for 24 hours in the cookie `powned` (right after solving briefly in `powned_new`, until the server takes it over). It protects the site against automated mass requests and contains no personal data.
 
 ## Roadmap

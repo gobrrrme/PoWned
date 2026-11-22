@@ -27,9 +27,12 @@ final class Powned_Actions {
 	private static $eager = false;
 
 	/**
-	 * Forms the background miner holds until the block is solved.
+	 * The checkout submission is being validated in this request: only then creating an order
+	 * spends a block (not when a gateway or the admin creates one).
+	 *
+	 * @var bool
 	 */
-	const FORMS = 'form.checkout, form.checkout_coupon, form.woocommerce-cart-form, form.woocommerce-form-login, form.login, #loginform, form.wpcf7-form, #commentform';
+	public static $in_checkout = false;
 
 	/**
 	 * Hook everything up.
@@ -41,8 +44,20 @@ final class Powned_Actions {
 		}
 		add_action( 'wp_enqueue_scripts', array( __CLASS__, 'maybe_enqueue' ), 20 );
 		add_filter( 'script_loader_tag', array( __CLASS__, 'script_tag' ), 10, 2 );
+		if ( ! empty( $s['checkout'] ) ) {
+			add_action( 'woocommerce_checkout_create_order', array( __CLASS__, 'guard_order_creation' ), PHP_INT_MAX );
+			add_action( 'woocommerce_before_pay_action', array( __CLASS__, 'guard_pay' ), 1 );
+			add_action( 'woocommerce_paypal_payments_approve_order_request_started', array( __CLASS__, 'guard_paypal_express' ), 1 );
+		}
+		if ( ! empty( $s['guard_reset'] ) ) {
+			add_action( 'login_enqueue_scripts', array( __CLASS__, 'enqueue' ) );
+			add_action( 'lostpassword_post', array( __CLASS__, 'guard_reset' ), 1 );
+		}
 		if ( ! empty( $s['guard_coupon'] ) ) {
-			add_action( 'wc_ajax_apply_coupon', array( __CLASS__, 'guard_coupon_ajax' ), 1 );
+			// WooCommerce registers the same handler for wc-ajax and for admin-ajax.
+			foreach ( array( 'wc_ajax_apply_coupon', 'wp_ajax_woocommerce_apply_coupon', 'wp_ajax_nopriv_woocommerce_apply_coupon' ) as $hook ) {
+				add_action( $hook, array( __CLASS__, 'guard_coupon_ajax' ), 1 );
+			}
 			add_action( 'wp_loaded', array( __CLASS__, 'guard_coupon_form' ), 19 );
 		}
 		if ( ! empty( $s['guard_login'] ) ) {
@@ -52,25 +67,54 @@ final class Powned_Actions {
 		}
 		if ( ! empty( $s['guard_forms'] ) ) {
 			add_filter( 'wpcf7_form_elements', array( __CLASS__, 'enqueue_filter' ) );
-			add_filter( 'wpcf7_spam', array( __CLASS__, 'guard_cf7' ), 5, 2 );
+			// Last, so what another spam check catches does not cost a block.
+			add_filter( 'wpcf7_spam', array( __CLASS__, 'guard_cf7' ), PHP_INT_MAX, 2 );
 			add_action( 'comment_form_before', array( __CLASS__, 'enqueue' ) );
 			add_filter( 'pre_comment_approved', array( __CLASS__, 'guard_comment' ), 1 );
 		}
 	}
 
 	/**
-	 * Does the current request carry a valid block? Logged-in users always pass.
+	 * Who does not need a block: logged-in users and WP-CLI.
 	 */
-	public static function passes() {
-		if ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() ) {
-			return true;
-		}
-		if ( Powned::valid_cookie() ) {
+	private static function exempt() {
+		return ( defined( 'WP_CLI' ) && WP_CLI ) || ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() );
+	}
+
+	/**
+	 * Could this request do the action? Spends nothing.
+	 *
+	 * @param string $bucket Kind of action.
+	 * @return string '' if yes, otherwise 'block' or 'limit'.
+	 */
+	public static function check( $bucket ) {
+		return self::result( self::exempt() ? '' : Powned_Tickets::check( $bucket ) );
+	}
+
+	/**
+	 * Spend a block for the action.
+	 *
+	 * @param string $bucket Kind of action.
+	 * @return string '' if spent, otherwise 'block' or 'limit'.
+	 */
+	public static function spend( $bucket ) {
+		$why = self::result( self::exempt() ? '' : Powned_Tickets::spend( $bucket ) );
+		if ( '' === $why ) {
 			Powned::count( 'passed' );
-			return true;
 		}
-		Powned::count( 'refused' );
-		return false;
+		return $why;
+	}
+
+	/**
+	 * Count refusals.
+	 *
+	 * @param string $why Result.
+	 */
+	private static function result( $why ) {
+		if ( '' !== $why ) {
+			Powned::count( 'refused' );
+		}
+		return $why;
 	}
 
 	/**
@@ -92,8 +136,85 @@ final class Powned_Actions {
 	/**
 	 * Message for refused actions.
 	 */
-	private static function message() {
-		return Powned::strings( self::language() )['action'];
+	public static function message( $why = 'block' ) {
+		return Powned::strings( self::language() )[ 'limit' === $why ? 'limit' : 'action' ];
+	}
+
+	/**
+	 * Refusal at the checkout. A missing block carries the marker that makes the browser mine
+	 * and send again; a reached limit does not.
+	 *
+	 * @param string $why 'block' or 'limit'.
+	 */
+	public static function checkout_message( $why ) {
+		if ( 'limit' === $why ) {
+			return esc_html( self::message( $why ) );
+		}
+		return '<span class="powned-retry"></span>' . esc_html( Powned::strings( self::language() )['checkout'] );
+	}
+
+	/**
+	 * Right before the checkout saves an order: spend the block. WooCommerce turns the exception
+	 * into a checkout error and saves nothing.
+	 *
+	 * @throws Exception Without a block.
+	 */
+	public static function guard_order_creation() {
+		if ( ! self::$in_checkout ) {
+			return;
+		}
+		$why = self::spend( 'order' );
+		if ( '' !== $why ) {
+			throw new Exception( self::checkout_message( $why ) ); // phpcs:ignore WordPress.Security.EscapeOutput
+		}
+	}
+
+	/**
+	 * WooCommerce PayPal Payments can create and pay an order when an express payment is
+	 * approved, without the checkout. It also accepts PayPal orders nobody has approved yet,
+	 * so this spends a block too. When refused, PayPal's script continues on the checkout and
+	 * nothing has been charged.
+	 *
+	 * @param array $data Request data.
+	 * @throws RuntimeException Without a block (the endpoint answers it as a JSON error).
+	 */
+	public static function guard_paypal_express( $data ) {
+		if ( ! is_array( $data ) || empty( $data['should_create_wc_order'] ) ) {
+			return;
+		}
+		$why = self::spend( 'order' );
+		if ( '' !== $why ) {
+			throw new RuntimeException( esc_html( self::message( $why ) ) );
+		}
+	}
+
+	/**
+	 * "Pay for order" page: every payment attempt spends a block. Redirects back, because
+	 * WooCommerce carries on after a notice.
+	 *
+	 * @param WC_Order $order Order.
+	 */
+	public static function guard_pay( $order ) {
+		$why = self::spend( 'order' );
+		if ( '' === $why ) {
+			return;
+		}
+		wc_add_notice( esc_html( self::message( $why ) ), 'error' );
+		wp_safe_redirect( $order->get_checkout_payment_url() );
+		exit;
+	}
+
+	/**
+	 * Password reset (wp-login.php and WooCommerce): spends a block, whether the account exists
+	 * or not.
+	 *
+	 * @param WP_Error $errors Errors.
+	 */
+	public static function guard_reset( $errors ) {
+		$why = self::spend( 'reset' );
+		if ( '' !== $why && $errors instanceof WP_Error ) {
+			$errors->add( 'powned_required', esc_html( self::message( $why ) ) );
+		}
 	}
 
 	/**
@@ -106,12 +227,35 @@ final class Powned_Actions {
 		$s        = Powned::settings();
 		$received = function_exists( 'is_order_received_page' ) && is_order_received_page();
 		$shop     = is_cart() || ( is_checkout() && ! $received );
-		if ( ( ! empty( $s['checkout'] ) && ( $shop || is_product() ) )
-			|| ( ! empty( $s['guard_coupon'] ) && $shop )
-			|| ( ! empty( $s['guard_login'] ) && is_account_page() ) ) {
-			self::$eager = $shop || is_product();
+		$eager    = ( ! empty( $s['checkout'] ) && ( $shop || is_product() ) ) || ( ! empty( $s['guard_coupon'] ) && $shop );
+		if ( $eager || ( ( ! empty( $s['guard_login'] ) || ! empty( $s['guard_reset'] ) ) && is_account_page() ) ) {
+			self::$eager = $eager;
 			self::enqueue();
 		}
+	}
+
+	/**
+	 * Forms the miner holds until the block is ready: only those whose action is protected.
+	 */
+	private static function forms() {
+		$s    = Powned::settings();
+		$list = array();
+		if ( ! empty( $s['checkout'] ) ) {
+			$list[] = 'form.checkout, form#order_review';
+		}
+		if ( ! empty( $s['guard_coupon'] ) ) {
+			$list[] = 'form.checkout_coupon, form.woocommerce-cart-form';
+		}
+		if ( ! empty( $s['guard_login'] ) ) {
+			$list[] = 'form.woocommerce-form-login, form.login, #loginform';
+		}
+		if ( ! empty( $s['guard_reset'] ) ) {
+			$list[] = '#lostpasswordform, form.lost_reset_password';
+		}
+		if ( ! empty( $s['guard_forms'] ) ) {
+			$list[] = 'form.wpcf7-form, #commentform';
+		}
+		return implode( ', ', $list );
 	}
 
 	/**
@@ -148,9 +292,8 @@ final class Powned_Actions {
 		$attrs = array(
 			'endpoint' => add_query_arg( 'powned_challenge', '1', home_url( '/' ) ),
 			'worker'   => plugins_url( 'assets/pw-core.js', POWNED_FILE ) . '?ver=' . POWNED_VERSION,
-			'cookie'   => Powned::COOKIE,
-			'min'      => (int) Powned::settings()['base_bits'],
-			'forms'    => self::FORMS,
+			'cookie'   => Powned_Tickets::COOKIE,
+			'forms'    => self::forms(),
 			'eager'    => self::$eager ? 1 : 0,
 		);
 		$data = '';
@@ -164,10 +307,11 @@ final class Powned_Actions {
 	 * Coupons via Ajax (cart and checkout page): refuse before WooCommerce looks the code up.
 	 */
 	public static function guard_coupon_ajax() {
-		if ( self::passes() ) {
+		$why = self::spend( 'coupon' );
+		if ( '' === $why ) {
 			return;
 		}
-		wc_add_notice( self::message(), 'error' );
+		wc_add_notice( self::message( $why ), 'error' );
 		wc_print_notices();
 		wp_die();
 	}
@@ -176,11 +320,15 @@ final class Powned_Actions {
 	 * Coupons via the cart form without JavaScript.
 	 */
 	public static function guard_coupon_form() {
-		if ( empty( $_POST['apply_coupon'] ) || empty( $_POST['coupon_code'] ) || self::passes() ) { // phpcs:ignore WordPress.Security.NonceVerification
+		if ( empty( $_POST['apply_coupon'] ) || empty( $_POST['coupon_code'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
+			return;
+		}
+		$why = self::spend( 'coupon' );
+		if ( '' === $why ) {
 			return;
 		}
 		unset( $_POST['coupon_code'], $_REQUEST['coupon_code'] ); // phpcs:ignore WordPress.Security.NonceVerification
-		wc_add_notice( self::message(), 'error' );
+		wc_add_notice( self::message( $why ), 'error' );
 	}
 
 	/**
@@ -191,7 +339,8 @@ final class Powned_Actions {
 		if ( ( defined( 'XMLRPC_REQUEST' ) && XMLRPC_REQUEST ) || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
 			return false;
 		}
-		return isset( $_POST['pwd'] ) || isset( $_POST['woocommerce-login-nonce'] ); // phpcs:ignore WordPress.Security.NonceVerification
+		// The same fields WooCommerce looks at: its nonce may also arrive as _wpnonce or in the URL.
+		return isset( $_POST['pwd'] ) || isset( $_POST['login'], $_POST['username'], $_POST['password'] ); // phpcs:ignore WordPress.Security.NonceVerification
 	}
 
 	/**
@@ -200,7 +349,7 @@ final class Powned_Actions {
 	 *
 	 * @var bool
 	 */
-	private static $login_refused = false;
+	private static $login_refused = '';
 
 	/**
 	 * Before the password check.
@@ -209,12 +358,16 @@ final class Powned_Actions {
 	 * @param string $password Password (by reference).
 	 */
 	public static function guard_login_early( &$username, &$password ) {
-		if ( '' === (string) $username || ! self::is_form_login() || Powned::valid_cookie() ) {
+		if ( '' === (string) $username || ! self::is_form_login() ) {
 			return;
 		}
-		self::$login_refused = true;
-		Powned::count( 'refused' );
-		$password = '';
+		// Not exempt when logged in: someone signing in again guesses like everyone else.
+		$why = self::result( Powned_Tickets::spend( 'login' ) );
+		if ( '' === $why ) {
+			return;
+		}
+		self::$login_refused = $why;
+		$password            = '';
 	}
 
 	/**
@@ -224,7 +377,7 @@ final class Powned_Actions {
 	 * @return WP_User|WP_Error|null
 	 */
 	public static function guard_login( $user ) {
-		return self::$login_refused ? new WP_Error( 'powned_required', esc_html( self::message() ) ) : $user;
+		return '' !== self::$login_refused ? new WP_Error( 'powned_required', esc_html( self::message( self::$login_refused ) ) ) : $user;
 	}
 
 	/**
@@ -234,11 +387,15 @@ final class Powned_Actions {
 	 * @param object $submission Submission.
 	 */
 	public static function guard_cf7( $spam, $submission = null ) {
-		if ( $spam || self::passes() ) {
+		if ( $spam ) {
+			return $spam;
+		}
+		$why = self::spend( 'form' );
+		if ( '' === $why ) {
 			return $spam;
 		}
 		if ( $submission && method_exists( $submission, 'add_spam_log' ) ) {
-			$submission->add_spam_log( array( 'agent' => 'powned', 'reason' => 'No solved PoWned block.' ) );
+			$submission->add_spam_log( array( 'agent' => 'powned', 'reason' => 'limit' === $why ? 'Too many submissions from this network.' : 'No unspent PoWned block.' ) );
 		}
 		return true;
 	}
@@ -250,9 +407,13 @@ final class Powned_Actions {
 	 * @return int|string|WP_Error
 	 */
 	public static function guard_comment( $approved ) {
-		if ( is_wp_error( $approved ) || self::passes() ) {
+		if ( is_wp_error( $approved ) ) {
 			return $approved;
 		}
-		return new WP_Error( 'powned_required', esc_html( self::message() ), 403 );
+		$why = self::spend( 'form' );
+		if ( '' === $why ) {
+			return $approved;
+		}
+		return new WP_Error( 'powned_required', esc_html( self::message( $why ) ), 'limit' === $why ? 429 : 403 );
 	}
 }
